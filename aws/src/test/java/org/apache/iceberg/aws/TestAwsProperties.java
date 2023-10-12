@@ -16,85 +16,35 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.aws;
 
-import java.util.Map;
-import org.apache.iceberg.AssertHelpers;
-import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.junit.Assert;
-import org.junit.Test;
-import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
+import java.io.IOException;
+import java.util.Collections;
+import org.apache.iceberg.TestHelpers;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 public class TestAwsProperties {
 
   @Test
-  public void testS3FileIoSseCustom_mustHaveCustomKey() {
-    Map<String, String> map = Maps.newHashMap();
-    map.put(AwsProperties.S3FILEIO_SSE_TYPE, AwsProperties.S3FILEIO_SSE_TYPE_CUSTOM);
-    AssertHelpers.assertThrows("must have key for SSE-C",
-        NullPointerException.class,
-        "Cannot initialize SSE-C S3FileIO with null encryption key",
-        () -> new AwsProperties(map));
-  }
+  public void testKryoSerialization() throws IOException {
+    AwsProperties awsProperties = new AwsProperties();
+    AwsProperties deSerializedAwsProperties =
+        TestHelpers.KryoHelpers.roundTripSerialize(awsProperties);
+    Assertions.assertThat(deSerializedAwsProperties.httpClientProperties())
+        .isEqualTo(awsProperties.httpClientProperties());
 
-  @Test
-  public void testS3FileIoSseCustom_mustHaveCustomMd5() {
-    Map<String, String> map = Maps.newHashMap();
-    map.put(AwsProperties.S3FILEIO_SSE_TYPE, AwsProperties.S3FILEIO_SSE_TYPE_CUSTOM);
-    map.put(AwsProperties.S3FILEIO_SSE_KEY, "something");
-    AssertHelpers.assertThrows("must have md5 for SSE-C",
-        NullPointerException.class,
-        "Cannot initialize SSE-C S3FileIO with null encryption key MD5",
-        () -> new AwsProperties(map));
-  }
+    AwsProperties awsPropertiesWithProps = new AwsProperties(ImmutableMap.of("a", "b"));
+    AwsProperties deSerializedAwsPropertiesWithProps =
+        TestHelpers.KryoHelpers.roundTripSerialize(awsPropertiesWithProps);
+    Assertions.assertThat(deSerializedAwsPropertiesWithProps.httpClientProperties())
+        .isEqualTo(awsProperties.httpClientProperties());
 
-  @Test
-  public void testS3FileIoAcl() {
-    Map<String, String> map = Maps.newHashMap();
-    map.put(AwsProperties.S3FILEIO_ACL, ObjectCannedACL.AUTHENTICATED_READ.toString());
-    AwsProperties properties = new AwsProperties(map);
-    Assert.assertEquals(ObjectCannedACL.AUTHENTICATED_READ, properties.s3FileIoAcl());
+    AwsProperties awsPropertiesWithEmptyProps = new AwsProperties(Collections.emptyMap());
+    AwsProperties deSerializedAwsPropertiesWithEmptyProps =
+        TestHelpers.KryoHelpers.roundTripSerialize(awsPropertiesWithProps);
+    Assertions.assertThat(deSerializedAwsPropertiesWithEmptyProps.httpClientProperties())
+        .isEqualTo(awsProperties.httpClientProperties());
   }
-
-  @Test
-  public void testS3FileIoAcl_unknownType() {
-    Map<String, String> map = Maps.newHashMap();
-    map.put(AwsProperties.S3FILEIO_ACL, "bad-input");
-    AssertHelpers.assertThrows("should not accept bad input",
-        IllegalArgumentException.class,
-        "Cannot support S3 CannedACL bad-input",
-        () -> new AwsProperties(map));
-  }
-
-  @Test
-  public void testS3MultipartSizeTooSmall() {
-    Map<String, String> map = Maps.newHashMap();
-    map.put(AwsProperties.S3FILEIO_MULTIPART_SIZE, "1");
-    AssertHelpers.assertThrows("should not accept small part size",
-        IllegalArgumentException.class,
-        "Minimum multipart upload object size must be larger than 5 MB",
-        () -> new AwsProperties(map));
-  }
-
-  @Test
-  public void testS3MultipartSizeTooLarge() {
-    Map<String, String> map = Maps.newHashMap();
-    map.put(AwsProperties.S3FILEIO_MULTIPART_SIZE, "5368709120"); // 5GB
-    AssertHelpers.assertThrows("should not accept too big part size",
-        IllegalArgumentException.class,
-        "Input malformed or exceeded maximum multipart upload size 5GB",
-        () -> new AwsProperties(map));
-  }
-
-  @Test
-  public void testS3MultipartThresholdFactorLessThanOne() {
-    Map<String, String> map = Maps.newHashMap();
-    map.put(AwsProperties.S3FILEIO_MULTIPART_THRESHOLD_FACTOR, "0.9");
-    AssertHelpers.assertThrows("should not accept factor less than 1",
-        IllegalArgumentException.class,
-        "Multipart threshold factor must be >= to 1.0",
-        () -> new AwsProperties(map));
-  }
-
 }

@@ -16,53 +16,40 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg;
 
 import java.util.function.Function;
-import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.io.CloseableIterable;
 
 class StaticTableScan extends BaseMetadataTableScan {
   private final Function<StaticTableScan, DataTask> buildTask;
-  private final String tableType;
 
-  StaticTableScan(TableOperations ops, Table table, Schema schema, String tableType,
-                  Function<StaticTableScan, DataTask> buildTask) {
-    super(ops, table, schema);
+  StaticTableScan(
+      Table table,
+      Schema schema,
+      MetadataTableType tableType,
+      Function<StaticTableScan, DataTask> buildTask) {
+    super(table, schema, tableType);
     this.buildTask = buildTask;
-    this.tableType = tableType;
   }
 
-  StaticTableScan(TableOperations ops, Table table, Schema schema, String tableType,
-                          Function<StaticTableScan, DataTask> buildTask, TableScanContext context) {
-    super(ops, table, schema, context);
+  StaticTableScan(
+      Table table,
+      Schema schema,
+      MetadataTableType tableType,
+      Function<StaticTableScan, DataTask> buildTask,
+      TableScanContext context) {
+    super(table, schema, tableType, context);
     this.buildTask = buildTask;
-    this.tableType = tableType;
   }
 
   @Override
-  public TableScan appendsBetween(long fromSnapshotId, long toSnapshotId) {
-    throw new UnsupportedOperationException(
-        String.format("Cannot incrementally scan table of type %s", tableType));
+  protected TableScan newRefinedScan(Table table, Schema schema, TableScanContext context) {
+    return new StaticTableScan(table, schema, tableType(), buildTask, context);
   }
 
   @Override
-  public TableScan appendsAfter(long fromSnapshotId) {
-    throw new UnsupportedOperationException(
-        String.format("Cannot incrementally scan table of type %s", tableType));
-  }
-
-  @Override
-  protected TableScan newRefinedScan(TableOperations ops, Table table, Schema schema, TableScanContext context) {
-    return new StaticTableScan(
-        ops, table, schema, tableType, buildTask, context);
-  }
-
-  @Override
-  protected CloseableIterable<FileScanTask> planFiles(
-      TableOperations ops, Snapshot snapshot, Expression rowFilter,
-      boolean ignoreResiduals, boolean caseSensitive, boolean colStats) {
+  protected CloseableIterable<FileScanTask> doPlanFiles() {
     return CloseableIterable.withNoopClose(buildTask.apply(this));
   }
 }

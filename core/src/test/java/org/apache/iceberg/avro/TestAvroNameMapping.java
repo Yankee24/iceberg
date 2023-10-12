@@ -16,8 +16,9 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.avro;
+
+import static org.apache.avro.generic.GenericData.Record;
 
 import java.io.File;
 import java.io.IOException;
@@ -27,7 +28,6 @@ import org.apache.avro.file.DataFileWriter;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.io.DatumWriter;
-import org.apache.iceberg.AssertHelpers;
 import org.apache.iceberg.Files;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.mapping.MappedField;
@@ -40,72 +40,95 @@ import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Comparators;
 import org.apache.iceberg.types.Types;
-import org.junit.Assert;
-import org.junit.Test;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.Test;
 
-import static org.apache.avro.generic.GenericData.Record;
-
+@SuppressWarnings("unchecked")
 public class TestAvroNameMapping extends TestAvroReadProjection {
   @Test
   public void testMapProjections() throws IOException {
-    Schema writeSchema = new Schema(
-        Types.NestedField.required(0, "id", Types.LongType.get()),
-        Types.NestedField.optional(5, "location", Types.MapType.ofOptional(6, 7,
-            Types.StringType.get(),
-            Types.StructType.of(
-                Types.NestedField.required(1, "lat", Types.FloatType.get()),
-                Types.NestedField.optional(2, "long", Types.FloatType.get())
-            )
-        )));
+    Schema writeSchema =
+        new Schema(
+            Types.NestedField.required(0, "id", Types.LongType.get()),
+            Types.NestedField.optional(
+                5,
+                "location",
+                Types.MapType.ofOptional(
+                    6,
+                    7,
+                    Types.StringType.get(),
+                    Types.StructType.of(
+                        Types.NestedField.required(1, "lat", Types.FloatType.get()),
+                        Types.NestedField.optional(2, "long", Types.FloatType.get())))));
 
     Record record = new Record(AvroSchemaUtil.convert(writeSchema, "table"));
     record.put("id", 34L);
-    Record location = new Record(AvroSchemaUtil.fromOption(
-        AvroSchemaUtil.fromOption(record.getSchema().getField("location").schema())
-            .getValueType()));
+    Record location =
+        new Record(
+            AvroSchemaUtil.fromOption(
+                AvroSchemaUtil.fromOption(record.getSchema().getField("location").schema())
+                    .getValueType()));
     location.put("lat", 52.995143f);
     location.put("long", -1.539054f);
     record.put("location", ImmutableMap.of("l1", location));
 
     // Table mapping does not project `location` map
-    NameMapping nameMapping = MappingUtil.create(new Schema(
-        Types.NestedField.required(0, "id", Types.LongType.get())));
+    NameMapping nameMapping =
+        MappingUtil.create(new Schema(Types.NestedField.required(0, "id", Types.LongType.get())));
 
     Schema readSchema = writeSchema;
 
     Record projected = writeAndRead(writeSchema, readSchema, record, nameMapping);
     // field id 5 comes from read schema
-    Assert.assertNotNull("Field missing from table mapping is renamed", projected.getSchema().getField("location_r5"));
-    Assert.assertNull("location field should not be read", projected.get("location_r5"));
-    Assert.assertEquals(34L, projected.get("id"));
+    Assertions.assertThat(projected.getSchema().getField("location_r5"))
+        .as("Field missing from table mapping is renamed")
+        .isNotNull();
+    Assertions.assertThat(projected.get("location_r5"))
+        .as("location field should not be read")
+        .isNull();
+    Assertions.assertThat(projected.get("id")).isEqualTo(34L);
 
     // Table mapping partially project `location` map value
-    nameMapping = MappingUtil.create(new Schema(
-        Types.NestedField.required(0, "id", Types.LongType.get()),
-        Types.NestedField.optional(5, "location", Types.MapType.ofOptional(6, 7,
-            Types.StringType.get(),
-            Types.StructType.of(
-                Types.NestedField.required(1, "lat", Types.FloatType.get()))))));
+    nameMapping =
+        MappingUtil.create(
+            new Schema(
+                Types.NestedField.required(0, "id", Types.LongType.get()),
+                Types.NestedField.optional(
+                    5,
+                    "location",
+                    Types.MapType.ofOptional(
+                        6,
+                        7,
+                        Types.StringType.get(),
+                        Types.StructType.of(
+                            Types.NestedField.required(1, "lat", Types.FloatType.get()))))));
 
     projected = writeAndRead(writeSchema, readSchema, record, nameMapping);
     Record projectedL1 = ((Map<String, Record>) projected.get("location")).get("l1");
-    Assert.assertNotNull("Field missing from table mapping is renamed", projectedL1.getSchema().getField("long_r2"));
-    Assert.assertNull("location.value.long, should not be read", projectedL1.get("long_r2"));
+    Assertions.assertThat(projectedL1.getSchema().getField("long_r2"))
+        .as("Field missing from table mapping is renamed")
+        .isNotNull();
+    Assertions.assertThat(projectedL1.get("long_r2"))
+        .as("location.value.long, should not be read")
+        .isNull();
   }
 
   @Test
   public void testComplexMapKeys() throws IOException {
-    Schema writeSchema = new Schema(
-        Types.NestedField.required(5, "location", Types.MapType.ofRequired(6, 7,
-            Types.StructType.of(
-                Types.NestedField.required(3, "k1", Types.StringType.get()),
-                Types.NestedField.required(4, "k2", Types.StringType.get())
-            ),
-            Types.StructType.of(
-                Types.NestedField.required(1, "lat", Types.FloatType.get()),
-                Types.NestedField.optional(2, "long", Types.FloatType.get())
-            )
-        )));
+    Schema writeSchema =
+        new Schema(
+            Types.NestedField.required(
+                5,
+                "location",
+                Types.MapType.ofRequired(
+                    6,
+                    7,
+                    Types.StructType.of(
+                        Types.NestedField.required(3, "k1", Types.StringType.get()),
+                        Types.NestedField.required(4, "k2", Types.StringType.get())),
+                    Types.StructType.of(
+                        Types.NestedField.required(1, "lat", Types.FloatType.get()),
+                        Types.NestedField.optional(2, "long", Types.FloatType.get())))));
 
     Record record = new Record(AvroSchemaUtil.convert(writeSchema, "table"));
     org.apache.avro.Schema locationSchema = record.getSchema().getField("location").schema();
@@ -122,154 +145,210 @@ public class TestAvroNameMapping extends TestAvroReadProjection {
     record.put("location", ImmutableList.of(locationElement));
 
     // project a subset of the map's value columns in NameMapping
-    NameMapping nameMapping = MappingUtil.create(new Schema(
-        Types.NestedField.required(5, "location", Types.MapType.ofOptional(6, 7,
-            Types.StructType.of(
-                Types.NestedField.required(3, "k1", Types.StringType.get()),
-                Types.NestedField.optional(4, "k2", Types.StringType.get())
-            ),
-            Types.StructType.of(
-                Types.NestedField.required(1, "lat", Types.FloatType.get())
-            )
-        ))));
+    NameMapping nameMapping =
+        MappingUtil.create(
+            new Schema(
+                Types.NestedField.required(
+                    5,
+                    "location",
+                    Types.MapType.ofOptional(
+                        6,
+                        7,
+                        Types.StructType.of(
+                            Types.NestedField.required(3, "k1", Types.StringType.get()),
+                            Types.NestedField.optional(4, "k2", Types.StringType.get())),
+                        Types.StructType.of(
+                            Types.NestedField.required(1, "lat", Types.FloatType.get()))))));
 
-    Schema readSchema = new Schema(
-        Types.NestedField.required(5, "location", Types.MapType.ofOptional(6, 7,
-            Types.StructType.of(
-                Types.NestedField.required(3, "k1", Types.StringType.get()),
-                Types.NestedField.optional(4, "k2", Types.StringType.get())
-            ),
-            Types.StructType.of(
-                Types.NestedField.required(1, "lat", Types.FloatType.get()),
-                Types.NestedField.optional(2, "long", Types.FloatType.get())
-            )
-        )));
+    Schema readSchema =
+        new Schema(
+            Types.NestedField.required(
+                5,
+                "location",
+                Types.MapType.ofOptional(
+                    6,
+                    7,
+                    Types.StructType.of(
+                        Types.NestedField.required(3, "k1", Types.StringType.get()),
+                        Types.NestedField.optional(4, "k2", Types.StringType.get())),
+                    Types.StructType.of(
+                        Types.NestedField.required(1, "lat", Types.FloatType.get()),
+                        Types.NestedField.optional(2, "long", Types.FloatType.get())))));
 
     Record projected = writeAndRead(writeSchema, readSchema, record, nameMapping);
     // The data is read back as a map
     Map<Record, Record> projectedLocation = (Map<Record, Record>) projected.get("location");
     Record projectedKey = projectedLocation.keySet().iterator().next();
     Record projectedValue = projectedLocation.values().iterator().next();
-    Assert.assertEquals(0, Comparators.charSequences().compare("k1", (CharSequence) projectedKey.get("k1")));
-    Assert.assertEquals(0, Comparators.charSequences().compare("k2", (CharSequence) projectedKey.get("k2")));
-    Assert.assertEquals(52.995143f, projectedValue.get("lat"));
-    Assert.assertNotNull(projectedValue.getSchema().getField("long_r2"));
-    Assert.assertNull(projectedValue.get("long_r2"));
+    Assertions.assertThat(
+            Comparators.charSequences().compare("k1", (CharSequence) projectedKey.get("k1")))
+        .isEqualTo(0);
+    Assertions.assertThat(
+            Comparators.charSequences().compare("k2", (CharSequence) projectedKey.get("k2")))
+        .isEqualTo(0);
+    Assertions.assertThat(projectedValue.get("lat")).isEqualTo(52.995143f);
+    Assertions.assertThat(projectedValue.getSchema().getField("long_r2")).isNotNull();
+    Assertions.assertThat(projectedValue.get("long_r2")).isNull();
   }
 
   @Test
   public void testMissingRequiredFields() {
-    Schema writeSchema = new Schema(
-        Types.NestedField.required(19, "x", Types.IntegerType.get()),
-        Types.NestedField.optional(18, "y", Types.IntegerType.get()));
+    Schema writeSchema =
+        new Schema(
+            Types.NestedField.required(19, "x", Types.IntegerType.get()),
+            Types.NestedField.optional(18, "y", Types.IntegerType.get()));
 
     Record record = new Record(AvroSchemaUtil.convert(writeSchema, "table"));
     record.put("x", 1);
     record.put("y", 2);
 
     // table mapping not projecting a required field 'x'
-    NameMapping nameMapping = MappingUtil.create(new Schema(
-        Types.NestedField.optional(18, "y", Types.IntegerType.get())));
+    NameMapping nameMapping =
+        MappingUtil.create(
+            new Schema(Types.NestedField.optional(18, "y", Types.IntegerType.get())));
 
     Schema readSchema = writeSchema;
-    AssertHelpers.assertThrows("Missing required field in nameMapping",
-        IllegalArgumentException.class, "Missing required field: x",
-        // In this case, pruneColumns result is an empty record
-        () -> writeAndRead(writeSchema, readSchema, record, nameMapping));
+    Assertions.assertThatThrownBy(
+            // In this case, pruneColumns result is an empty record
+            () -> writeAndRead(writeSchema, readSchema, record, nameMapping))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Missing required field: x");
   }
 
   @Test
   public void testArrayProjections() throws Exception {
-    Schema writeSchema = new Schema(
-        Types.NestedField.required(0, "id", Types.LongType.get()),
-        Types.NestedField.optional(22, "point",
-            Types.ListType.ofOptional(21, Types.StructType.of(
-                Types.NestedField.required(19, "x", Types.IntegerType.get()),
-                Types.NestedField.optional(18, "y", Types.IntegerType.get())
-            ))
-        )
-    );
+    Schema writeSchema =
+        new Schema(
+            Types.NestedField.required(0, "id", Types.LongType.get()),
+            Types.NestedField.optional(
+                22,
+                "point",
+                Types.ListType.ofOptional(
+                    21,
+                    Types.StructType.of(
+                        Types.NestedField.required(19, "x", Types.IntegerType.get()),
+                        Types.NestedField.optional(18, "y", Types.IntegerType.get())))));
 
     Record record = new Record(AvroSchemaUtil.convert(writeSchema, "table"));
     record.put("id", 34L);
-    Record pointRecord = new Record(AvroSchemaUtil.fromOption(
-        AvroSchemaUtil.fromOption(record.getSchema().getField("point").schema()).getElementType()));
+    Record pointRecord =
+        new Record(
+            AvroSchemaUtil.fromOption(
+                AvroSchemaUtil.fromOption(record.getSchema().getField("point").schema())
+                    .getElementType()));
     pointRecord.put("x", 1);
     pointRecord.put("y", 2);
     record.put("point", ImmutableList.of(pointRecord));
 
-    NameMapping nameMapping = MappingUtil.create(new Schema(
-        // Optional array field missing.
-        Types.NestedField.required(0, "id", Types.LongType.get())));
+    NameMapping nameMapping =
+        MappingUtil.create(
+            new Schema(
+                // Optional array field missing.
+                Types.NestedField.required(0, "id", Types.LongType.get())));
 
     Schema readSchema = writeSchema;
 
     Record projected = writeAndRead(writeSchema, readSchema, record, nameMapping);
-    Assert.assertNotNull("Field missing from table mapping is renamed", projected.getSchema().getField("point_r22"));
-    Assert.assertNull("point field is not projected", projected.get("point_r22"));
-    Assert.assertEquals(34L, projected.get("id"));
-
+    Assertions.assertThat(projected.getSchema().getField("point_r22"))
+        .as("Field missing from table mapping is renamed")
+        .isNotNull();
+    Assertions.assertThat(projected.get("point_r22")).as("point field is not projected").isNull();
+    Assertions.assertThat(projected.get("id")).isEqualTo(34L);
     // point array is partially projected
-    nameMapping = MappingUtil.create(new Schema(
-        Types.NestedField.required(0, "id", Types.LongType.get()),
-        Types.NestedField.optional(22, "point",
-            Types.ListType.ofOptional(21, Types.StructType.of(
-                Types.NestedField.required(19, "x", Types.IntegerType.get())))
-        )
-    ));
+    nameMapping =
+        MappingUtil.create(
+            new Schema(
+                Types.NestedField.required(0, "id", Types.LongType.get()),
+                Types.NestedField.optional(
+                    22,
+                    "point",
+                    Types.ListType.ofOptional(
+                        21,
+                        Types.StructType.of(
+                            Types.NestedField.required(19, "x", Types.IntegerType.get()))))));
 
     projected = writeAndRead(writeSchema, readSchema, record, nameMapping);
     Record point = ((List<Record>) projected.get("point")).get(0);
-
-    Assert.assertNotNull("Field missing from table mapping is renamed", point.getSchema().getField("y_r18"));
-    Assert.assertEquals("point.x is projected", 1, point.get("x"));
-    Assert.assertNull("point.y is not projected", point.get("y_r18"));
-    Assert.assertEquals(34L, projected.get("id"));
+    Assertions.assertThat(point.getSchema().getField("y_r18"))
+        .as("Field missing from table mapping is renamed")
+        .isNotNull();
+    Assertions.assertThat(point.get("x")).as("point.x is projected").isEqualTo(1);
+    Assertions.assertThat(point.get("y_r18")).as("point.y is not projected").isNull();
+    Assertions.assertThat(projected.get("id")).isEqualTo(34L);
   }
 
   @Test
   public void testAliases() throws IOException {
-    Schema writeSchema = new Schema(
-        Types.NestedField.optional(22, "points",
-            Types.ListType.ofOptional(21, Types.StructType.of(
-                Types.NestedField.required(19, "x", Types.IntegerType.get())))));
+    Schema writeSchema =
+        new Schema(
+            Types.NestedField.optional(
+                22,
+                "points",
+                Types.ListType.ofOptional(
+                    21,
+                    Types.StructType.of(
+                        Types.NestedField.required(19, "x", Types.IntegerType.get())))));
 
     Record record = new Record(AvroSchemaUtil.convert(writeSchema, "table"));
-    Record pointRecord = new Record(AvroSchemaUtil.fromOption(
-        AvroSchemaUtil.fromOption(record.getSchema().getField("points").schema()).getElementType()));
+    Record pointRecord =
+        new Record(
+            AvroSchemaUtil.fromOption(
+                AvroSchemaUtil.fromOption(record.getSchema().getField("points").schema())
+                    .getElementType()));
     pointRecord.put("x", 1);
     record.put("points", ImmutableList.of(pointRecord));
 
-    NameMapping nameMapping = NameMapping.of(
-        MappedFields.of(
-            MappedField.of(22, "points", MappedFields.of(
-                MappedField.of(21, "element", MappedFields.of(
-                    MappedField.of(19, Lists.newArrayList("x"))))))));
+    NameMapping nameMapping =
+        NameMapping.of(
+            MappedFields.of(
+                MappedField.of(
+                    22,
+                    "points",
+                    MappedFields.of(
+                        MappedField.of(
+                            21,
+                            "element",
+                            MappedFields.of(MappedField.of(19, Lists.newArrayList("x"))))))));
 
-    Schema readSchema = new Schema(
-        Types.NestedField.optional(22, "points",
-            Types.ListType.ofOptional(21, Types.StructType.of(
-                // x renamed to y
-                Types.NestedField.required(19, "y", Types.IntegerType.get())))));
+    Schema readSchema =
+        new Schema(
+            Types.NestedField.optional(
+                22,
+                "points",
+                Types.ListType.ofOptional(
+                    21,
+                    Types.StructType.of(
+                        // x renamed to y
+                        Types.NestedField.required(19, "y", Types.IntegerType.get())))));
 
     Record projected = writeAndRead(writeSchema, readSchema, record, nameMapping);
-    Assert.assertEquals("x is read as y", 1, ((List<Record>) projected.get("points")).get(0).get("y"));
+    Assertions.assertThat(((List<Record>) projected.get("points")).get(0).get("y"))
+        .as("x is read as y")
+        .isEqualTo(1);
 
-    readSchema = new Schema(
-        Types.NestedField.optional(22, "points",
-            Types.ListType.ofOptional(21, Types.StructType.of(
-                // x renamed to z
-                Types.NestedField.required(19, "z", Types.IntegerType.get())))));
+    readSchema =
+        new Schema(
+            Types.NestedField.optional(
+                22,
+                "points",
+                Types.ListType.ofOptional(
+                    21,
+                    Types.StructType.of(
+                        // x renamed to z
+                        Types.NestedField.required(19, "z", Types.IntegerType.get())))));
 
     projected = writeAndRead(writeSchema, readSchema, record, nameMapping);
-    Assert.assertEquals("x is read as z", 1, ((List<Record>) projected.get("points")).get(0).get("z"));
+    Assertions.assertThat(((List<Record>) projected.get("points")).get(0).get("z"))
+        .as("x is read as z")
+        .isEqualTo(1);
   }
 
   @Test
   public void testInferredMapping() throws IOException {
-    Schema writeSchema = new Schema(
-        Types.NestedField.required(0, "id", Types.LongType.get()),
-        Types.NestedField.optional(1, "data", Types.StringType.get()));
+    Schema writeSchema =
+        new Schema(
+            Types.NestedField.required(0, "id", Types.LongType.get()),
+            Types.NestedField.optional(1, "data", Types.StringType.get()));
 
     Record record = new Record(AvroSchemaUtil.convert(writeSchema, "table"));
     record.put("id", 34L);
@@ -278,7 +357,7 @@ public class TestAvroNameMapping extends TestAvroReadProjection {
     Schema readSchema = writeSchema;
     // Pass null for nameMapping so that it is automatically inferred from read schema
     Record projected = writeAndRead(writeSchema, readSchema, record, null);
-    Assert.assertEquals(record, projected);
+    Assertions.assertThat(projected).isEqualTo(record);
   }
 
   @Test
@@ -288,29 +367,25 @@ public class TestAvroNameMapping extends TestAvroReadProjection {
   }
 
   @Override
-  protected Record writeAndRead(String desc,
-                                Schema writeSchema,
-                                Schema readSchema,
-                                Record inputRecord) throws IOException {
+  protected Record writeAndRead(
+      String desc, Schema writeSchema, Schema readSchema, Record inputRecord) throws IOException {
 
     // Use all existing TestAvroReadProjection tests to verify that
     // we get the same projected Avro record whether we use
     // NameMapping together with file schema without field-ids or we
     // use a file schema having field-ids
     Record record = super.writeAndRead(desc, writeSchema, readSchema, inputRecord);
-    Record projectedWithNameMapping = writeAndRead(
-        writeSchema, readSchema, inputRecord, MappingUtil.create(writeSchema));
-    Assert.assertEquals(record, projectedWithNameMapping);
+    Record projectedWithNameMapping =
+        writeAndRead(writeSchema, readSchema, inputRecord, MappingUtil.create(writeSchema));
+    Assertions.assertThat(projectedWithNameMapping).isEqualTo(record);
     return record;
   }
 
+  private Record writeAndRead(
+      Schema writeSchema, Schema readSchema, Record record, NameMapping nameMapping)
+      throws IOException {
 
-  private Record writeAndRead(Schema writeSchema,
-                              Schema readSchema,
-                              Record record,
-                              NameMapping nameMapping) throws IOException {
-
-    File file = temp.newFile();
+    File file = temp.resolve("test.avro").toFile();
     // Write without file ids
     org.apache.avro.Schema writeAvroSchema = RemoveIds.removeIds(writeSchema);
     DatumWriter<Record> datumWriter = new GenericDatumWriter<>(writeAvroSchema);
@@ -319,10 +394,8 @@ public class TestAvroNameMapping extends TestAvroReadProjection {
       dataFileWriter.append(record);
     }
 
-    Iterable<GenericData.Record> records = Avro.read(Files.localInput(file))
-        .project(readSchema)
-        .withNameMapping(nameMapping)
-        .build();
+    Iterable<GenericData.Record> records =
+        Avro.read(Files.localInput(file)).project(readSchema).withNameMapping(nameMapping).build();
 
     return Iterables.getOnlyElement(records);
   }

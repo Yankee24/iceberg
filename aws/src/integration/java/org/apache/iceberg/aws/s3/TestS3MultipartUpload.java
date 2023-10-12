@@ -16,7 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.aws.s3;
 
 import java.io.IOException;
@@ -26,7 +25,6 @@ import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import org.apache.iceberg.aws.AwsClientFactories;
 import org.apache.iceberg.aws.AwsIntegTestUtil;
-import org.apache.iceberg.aws.AwsProperties;
 import org.apache.iceberg.io.PositionOutputStream;
 import org.apache.iceberg.io.SeekableInputStream;
 import org.junit.AfterClass;
@@ -36,16 +34,14 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import software.amazon.awssdk.services.s3.S3Client;
 
-/**
- * Long-running tests to ensure multipart upload logic is resilient
- */
+/** Long-running tests to ensure multipart upload logic is resilient */
 public class TestS3MultipartUpload {
 
   private final Random random = new Random(1);
   private static S3Client s3;
   private static String bucketName;
   private static String prefix;
-  private static AwsProperties properties;
+  private static S3FileIOProperties properties;
   private static S3FileIO io;
   private String objectUri;
 
@@ -54,8 +50,9 @@ public class TestS3MultipartUpload {
     s3 = AwsClientFactories.defaultFactory().s3();
     bucketName = AwsIntegTestUtil.testBucketName();
     prefix = UUID.randomUUID().toString();
-    properties = new AwsProperties();
-    properties.setS3FileIoMultiPartSize(AwsProperties.S3FILEIO_MULTIPART_SIZE_MIN);
+    properties = new S3FileIOProperties();
+    properties.setMultiPartSize(S3FileIOProperties.MULTIPART_SIZE_MIN);
+    properties.setChecksumEnabled(true);
     io = new S3FileIO(() -> s3, properties);
   }
 
@@ -74,19 +71,24 @@ public class TestS3MultipartUpload {
   public void testManyPartsWriteWithInt() throws IOException {
     int parts = 200;
     writeInts(objectUri, parts, random::nextInt);
-    Assert.assertEquals(parts * (long) AwsProperties.S3FILEIO_MULTIPART_SIZE_MIN,
+    Assert.assertEquals(
+        parts * (long) S3FileIOProperties.MULTIPART_SIZE_MIN,
         io.newInputFile(objectUri).getLength());
   }
 
   @Test
   public void testManyPartsWriteWithBytes() throws IOException {
     int parts = 200;
-    byte[] bytes = new byte[AwsProperties.S3FILEIO_MULTIPART_SIZE_MIN];
-    writeBytes(objectUri, parts, () -> {
-      random.nextBytes(bytes);
-      return bytes;
-    });
-    Assert.assertEquals(parts * (long) AwsProperties.S3FILEIO_MULTIPART_SIZE_MIN,
+    byte[] bytes = new byte[S3FileIOProperties.MULTIPART_SIZE_MIN];
+    writeBytes(
+        objectUri,
+        parts,
+        () -> {
+          random.nextBytes(bytes);
+          return bytes;
+        });
+    Assert.assertEquals(
+        parts * (long) S3FileIOProperties.MULTIPART_SIZE_MIN,
         io.newInputFile(objectUri).getLength());
   }
 
@@ -98,8 +100,8 @@ public class TestS3MultipartUpload {
 
   @Test
   public void testContentsWriteWithBytes() throws IOException {
-    byte[] bytes = new byte[AwsProperties.S3FILEIO_MULTIPART_SIZE_MIN];
-    for (int i = 0; i < AwsProperties.S3FILEIO_MULTIPART_SIZE_MIN; i++) {
+    byte[] bytes = new byte[S3FileIOProperties.MULTIPART_SIZE_MIN];
+    for (int i = 0; i < S3FileIOProperties.MULTIPART_SIZE_MIN; i++) {
       bytes[i] = 6;
     }
     writeBytes(objectUri, 10, () -> bytes);
@@ -108,7 +110,7 @@ public class TestS3MultipartUpload {
 
   @Test
   public void testUploadRemainder() throws IOException {
-    long length = 3 * AwsProperties.S3FILEIO_MULTIPART_SIZE_MIN + 2 * 1024 * 1024;
+    long length = 3 * S3FileIOProperties.MULTIPART_SIZE_MIN + 2 * 1024 * 1024;
     writeInts(objectUri, 1, length, random::nextInt);
     Assert.assertEquals(length, io.newInputFile(objectUri).getLength());
   }
@@ -116,8 +118,7 @@ public class TestS3MultipartUpload {
   @Test
   public void testParallelUpload() throws IOException {
     int threads = 16;
-    IntStream.range(0, threads).parallel()
-        .forEach(d -> writeInts(objectUri + d, 3, () -> d));
+    IntStream.range(0, threads).parallel().forEach(d -> writeInts(objectUri + d, 3, () -> d));
 
     for (int i = 0; i < threads; i++) {
       final int d = i;
@@ -126,7 +127,7 @@ public class TestS3MultipartUpload {
   }
 
   private void writeInts(String fileUri, int parts, Supplier<Integer> writer) {
-    writeInts(fileUri, parts, AwsProperties.S3FILEIO_MULTIPART_SIZE_MIN, writer);
+    writeInts(fileUri, parts, S3FileIOProperties.MULTIPART_SIZE_MIN, writer);
   }
 
   private void writeInts(String fileUri, int parts, long partSize, Supplier<Integer> writer) {

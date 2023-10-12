@@ -16,33 +16,34 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.arrow.vectorized;
 
+import java.math.BigDecimal;
 import org.apache.arrow.vector.FieldVector;
+import org.apache.iceberg.arrow.DictEncodedArrowConverter;
 import org.apache.iceberg.types.Types;
 
 /**
- * This class is inspired by Spark's {@code ColumnVector}.
- * This class represents the column data for an Iceberg table query.
- * It wraps an arrow {@link FieldVector} and provides simple
- * accessors for the row values. Advanced users can access
- * the {@link FieldVector}.
- * <p>
- *   Supported Iceberg data types:
- *   <ul>
- *     <li>{@link Types.BooleanType}</li>
- *     <li>{@link Types.IntegerType}</li>
- *     <li>{@link Types.LongType}</li>
- *     <li>{@link Types.FloatType}</li>
- *     <li>{@link Types.DoubleType}</li>
- *     <li>{@link Types.StringType}</li>
- *     <li>{@link Types.BinaryType}</li>
- *     <li>{@link Types.TimestampType} (with and without timezone)</li>
- *     <li>{@link Types.DateType}</li>
- *     <li>{@link Types.TimeType}</li>
- *     <li>{@link Types.UUIDType}</li>
- *   </ul>
+ * This class is inspired by Spark's {@code ColumnVector}. This class represents the column data for
+ * an Iceberg table query. It wraps an arrow {@link FieldVector} and provides simple accessors for
+ * the row values. Advanced users can access the {@link FieldVector}.
+ *
+ * <p>Supported Iceberg data types:
+ *
+ * <ul>
+ *   <li>{@link Types.BooleanType}
+ *   <li>{@link Types.IntegerType}
+ *   <li>{@link Types.LongType}
+ *   <li>{@link Types.FloatType}
+ *   <li>{@link Types.DoubleType}
+ *   <li>{@link Types.StringType}
+ *   <li>{@link Types.BinaryType}
+ *   <li>{@link Types.TimestampType} (with and without timezone)
+ *   <li>{@link Types.DateType}
+ *   <li>{@link Types.TimeType}
+ *   <li>{@link Types.UUIDType}
+ *   <li>{@link Types.DecimalType}
+ * </ul>
  */
 public class ColumnVector implements AutoCloseable {
   private final VectorHolder vectorHolder;
@@ -55,10 +56,22 @@ public class ColumnVector implements AutoCloseable {
     this.accessor = getVectorAccessor(vectorHolder);
   }
 
+  /**
+   * Returns the potentially dict-encoded {@link FieldVector}.
+   *
+   * @return instance of {@link FieldVector}
+   */
   public FieldVector getFieldVector() {
-    // TODO Convert dictionary encoded vectors to correctly typed arrow vector.
-    //   e.g. convert long dictionary encoded vector to a BigIntVector.
     return vectorHolder.vector();
+  }
+
+  /**
+   * Decodes a dict-encoded vector and returns the actual arrow vector.
+   *
+   * @return instance of {@link FieldVector}
+   */
+  public FieldVector getArrowVector() {
+    return DictEncodedArrowConverter.toArrowVector(vectorHolder, accessor);
   }
 
   public boolean hasNull() {
@@ -110,6 +123,13 @@ public class ColumnVector implements AutoCloseable {
       return null;
     }
     return accessor.getBinary(rowId);
+  }
+
+  public BigDecimal getDecimal(int rowId, int precision, int scale) {
+    if (isNullAt(rowId)) {
+      return null;
+    }
+    return (BigDecimal) accessor.getDecimal(rowId, precision, scale);
   }
 
   private static ArrowVectorAccessor<?, String, ?, ?> getVectorAccessor(VectorHolder holder) {

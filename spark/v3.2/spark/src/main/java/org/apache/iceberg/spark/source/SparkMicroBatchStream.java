@@ -16,7 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.spark.source;
 
 import java.io.BufferedWriter;
@@ -35,8 +34,8 @@ import org.apache.iceberg.MicroBatches;
 import org.apache.iceberg.MicroBatches.MicroBatch;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
-import org.apache.iceberg.SerializableTable;
 import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.SnapshotSummary;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
@@ -48,8 +47,8 @@ import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.spark.SparkReadConf;
 import org.apache.iceberg.spark.SparkReadOptions;
-import org.apache.iceberg.spark.source.SparkBatchScan.ReadTask;
-import org.apache.iceberg.spark.source.SparkBatchScan.ReaderFactory;
+import org.apache.iceberg.spark.source.SparkScan.ReaderFactory;
+import org.apache.iceberg.util.PropertyUtil;
 import org.apache.iceberg.util.SnapshotUtil;
 import org.apache.iceberg.util.TableScanUtil;
 import org.apache.iceberg.util.Tasks;
@@ -71,30 +70,37 @@ public class SparkMicroBatchStream implements MicroBatchStream {
   private final boolean caseSensitive;
   private final String expectedSchema;
   private final Broadcast<Table> tableBroadcast;
-  private final Long splitSize;
-  private final Integer splitLookback;
-  private final Long splitOpenFileCost;
+  private final long splitSize;
+  private final int splitLookback;
+  private final long splitOpenFileCost;
   private final boolean localityPreferred;
   private final StreamingOffset initialOffset;
   private final boolean skipDelete;
-  private final Long fromTimestamp;
+  private final boolean skipOverwrite;
+  private final long fromTimestamp;
 
-  SparkMicroBatchStream(JavaSparkContext sparkContext, Table table, SparkReadConf readConf, boolean caseSensitive,
-                        Schema expectedSchema, String checkpointLocation) {
+  SparkMicroBatchStream(
+      JavaSparkContext sparkContext,
+      Table table,
+      SparkReadConf readConf,
+      Schema expectedSchema,
+      String checkpointLocation) {
     this.table = table;
-    this.caseSensitive = caseSensitive;
+    this.caseSensitive = readConf.caseSensitive();
     this.expectedSchema = SchemaParser.toJson(expectedSchema);
     this.localityPreferred = readConf.localityEnabled();
-    this.tableBroadcast = sparkContext.broadcast(SerializableTable.copyOf(table));
+    this.tableBroadcast = sparkContext.broadcast(SerializableTableWithSize.copyOf(table));
     this.splitSize = readConf.splitSize();
     this.splitLookback = readConf.splitLookback();
     this.splitOpenFileCost = readConf.splitOpenFileCost();
     this.fromTimestamp = readConf.streamFromTimestamp();
 
-    InitialOffsetStore initialOffsetStore = new InitialOffsetStore(table, checkpointLocation, fromTimestamp);
+    InitialOffsetStore initialOffsetStore =
+        new InitialOffsetStore(table, checkpointLocation, fromTimestamp);
     this.initialOffset = initialOffsetStore.initialOffset();
 
     this.skipDelete = readConf.streamingSkipDeleteSnapshots();
+    this.skipOverwrite = readConf.streamingSkipOverwriteSnapshots();
   }
 
   @Override
@@ -109,14 +115,27 @@ public class SparkMicroBatchStream implements MicroBatchStream {
     }
 
     Snapshot latestSnapshot = table.currentSnapshot();
-    return new StreamingOffset(latestSnapshot.snapshotId(), Iterables.size(latestSnapshot.addedFiles()), false);
+    long addedFilesCount =
+        PropertyUtil.propertyAsLong(latestSnapshot.summary(), SnapshotSummary.ADDED_FILES_PROP, -1);
+    // If snapshotSummary doesn't have SnapshotSummary.ADDED_FILES_PROP, iterate through addedFiles
+    // iterator to find
+    // addedFilesCount.
+    addedFilesCount =
+        addedFilesCount == -1
+            ? Iterables.size(latestSnapshot.addedDataFiles(table.io()))
+            : addedFilesCount;
+
+    return new StreamingOffset(latestSnapshot.snapshotId(), addedFilesCount, false);
   }
 
   @Override
   public InputPartition[] planInputPartitions(Offset start, Offset end) {
-    Preconditions.checkArgument(end instanceof StreamingOffset, "Invalid end offset: %s is not a StreamingOffset", end);
     Preconditions.checkArgument(
-        start instanceof StreamingOffset, "Invalid start offset: %s is not a StreamingOffset", start);
+        end instanceof StreamingOffset, "Invalid end offset: %s is not a StreamingOffset", end);
+    Preconditions.checkArgument(
+        start instanceof StreamingOffset,
+        "Invalid start offset: %s is not a StreamingOffset",
+        start);
 
     if (end.equals(StreamingOffset.START_OFFSET)) {
       return new InputPartition[0];
@@ -127,21 +146,28 @@ public class SparkMicroBatchStream implements MicroBatchStream {
 
     List<FileScanTask> fileScanTasks = planFiles(startOffset, endOffset);
 
-    CloseableIterable<FileScanTask> splitTasks = TableScanUtil.splitFiles(
-        CloseableIterable.withNoopClose(fileScanTasks),
-        splitSize);
-    List<CombinedScanTask> combinedScanTasks = Lists.newArrayList(
-        TableScanUtil.planTasks(splitTasks, splitSize, splitLookback, splitOpenFileCost));
-    InputPartition[] readTasks = new InputPartition[combinedScanTasks.size()];
+    CloseableIterable<FileScanTask> splitTasks =
+        TableScanUtil.splitFiles(CloseableIterable.withNoopClose(fileScanTasks), splitSize);
+    List<CombinedScanTask> combinedScanTasks =
+        Lists.newArrayList(
+            TableScanUtil.planTasks(splitTasks, splitSize, splitLookback, splitOpenFileCost));
 
-    Tasks.range(readTasks.length)
+    InputPartition[] partitions = new InputPartition[combinedScanTasks.size()];
+
+    Tasks.range(partitions.length)
         .stopOnFailure()
         .executeWith(localityPreferred ? ThreadPools.getWorkerPool() : null)
-        .run(index -> readTasks[index] = new ReadTask(
-            combinedScanTasks.get(index), tableBroadcast, expectedSchema,
-            caseSensitive, localityPreferred));
+        .run(
+            index ->
+                partitions[index] =
+                    new SparkInputPartition(
+                        combinedScanTasks.get(index),
+                        tableBroadcast,
+                        expectedSchema,
+                        caseSensitive,
+                        localityPreferred));
 
-    return readTasks;
+    return partitions;
   }
 
   @Override
@@ -160,17 +186,17 @@ public class SparkMicroBatchStream implements MicroBatchStream {
   }
 
   @Override
-  public void commit(Offset end) {
-  }
+  public void commit(Offset end) {}
 
   @Override
-  public void stop() {
-  }
+  public void stop() {}
 
   private List<FileScanTask> planFiles(StreamingOffset startOffset, StreamingOffset endOffset) {
     List<FileScanTask> fileScanTasks = Lists.newArrayList();
-    StreamingOffset batchStartOffset = StreamingOffset.START_OFFSET.equals(startOffset) ?
-        determineStartingOffset(table, fromTimestamp) : startOffset;
+    StreamingOffset batchStartOffset =
+        StreamingOffset.START_OFFSET.equals(startOffset)
+            ? determineStartingOffset(table, fromTimestamp)
+            : startOffset;
 
     StreamingOffset currentOffset = null;
 
@@ -182,15 +208,26 @@ public class SparkMicroBatchStream implements MicroBatchStream {
         currentOffset = new StreamingOffset(snapshotAfter.snapshotId(), 0L, false);
       }
 
+      Snapshot snapshot = table.snapshot(currentOffset.snapshotId());
+
+      if (snapshot == null) {
+        throw new IllegalStateException(
+            String.format(
+                "Cannot load current offset at snapshot %d, the snapshot was expired or removed",
+                currentOffset.snapshotId()));
+      }
+
       if (!shouldProcess(table.snapshot(currentOffset.snapshotId()))) {
         LOG.debug("Skipping snapshot: {} of table {}", currentOffset.snapshotId(), table.name());
         continue;
       }
 
-      MicroBatch latestMicroBatch = MicroBatches.from(table.snapshot(currentOffset.snapshotId()), table.io())
-          .caseSensitive(caseSensitive)
-          .specsById(table.specs())
-          .generate(currentOffset.position(), Long.MAX_VALUE, currentOffset.shouldScanAllFiles());
+      MicroBatch latestMicroBatch =
+          MicroBatches.from(table.snapshot(currentOffset.snapshotId()), table.io())
+              .caseSensitive(caseSensitive)
+              .specsById(table.specs())
+              .generate(
+                  currentOffset.position(), Long.MAX_VALUE, currentOffset.shouldScanAllFiles());
 
       fileScanTasks.addAll(latestMicroBatch.tasks());
     } while (currentOffset.snapshotId() != endOffset.snapshotId());
@@ -200,13 +237,31 @@ public class SparkMicroBatchStream implements MicroBatchStream {
 
   private boolean shouldProcess(Snapshot snapshot) {
     String op = snapshot.operation();
-    Preconditions.checkState(!op.equals(DataOperations.DELETE) || skipDelete,
-        "Cannot process delete snapshot: %s, to ignore deletes, set %s=true.",
-        snapshot.snapshotId(), SparkReadOptions.STREAMING_SKIP_DELETE_SNAPSHOTS);
-    Preconditions.checkState(
-        op.equals(DataOperations.DELETE) || op.equals(DataOperations.APPEND) || op.equals(DataOperations.REPLACE),
-        "Cannot process %s snapshot: %s", op.toLowerCase(Locale.ROOT), snapshot.snapshotId());
-    return op.equals(DataOperations.APPEND);
+    switch (op) {
+      case DataOperations.APPEND:
+        return true;
+      case DataOperations.REPLACE:
+        return false;
+      case DataOperations.DELETE:
+        Preconditions.checkState(
+            skipDelete,
+            "Cannot process delete snapshot: %s, to ignore deletes, set %s=true",
+            snapshot.snapshotId(),
+            SparkReadOptions.STREAMING_SKIP_DELETE_SNAPSHOTS);
+        return false;
+      case DataOperations.OVERWRITE:
+        Preconditions.checkState(
+            skipOverwrite,
+            "Cannot process overwrite snapshot: %s, to ignore overwrites, set %s=true",
+            snapshot.snapshotId(),
+            SparkReadOptions.STREAMING_SKIP_OVERWRITE_SNAPSHOTS);
+        return false;
+      default:
+        throw new IllegalStateException(
+            String.format(
+                "Cannot process unknown snapshot operation: %s (snapshot id %s)",
+                op.toLowerCase(Locale.ROOT), snapshot.snapshotId()));
+    }
   }
 
   private static StreamingOffset determineStartingOffset(Table table, Long fromTimestamp) {
@@ -266,7 +321,8 @@ public class SparkMicroBatchStream implements MicroBatchStream {
 
     private void writeOffset(StreamingOffset offset, OutputFile file) {
       try (OutputStream outputStream = file.create()) {
-        BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
+        BufferedWriter writer =
+            new BufferedWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
         writer.write(offset.json());
         writer.flush();
       } catch (IOException ioException) {

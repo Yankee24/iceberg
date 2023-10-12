@@ -16,7 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.util;
 
 import java.util.Map;
@@ -24,13 +23,14 @@ import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.LockManager;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.assertj.core.api.Assertions;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestLockManagers {
 
   @Test
   public void testLoadDefaultLockManager() {
-    Assertions.assertThat(LockManagers.defaultLockManager()).isInstanceOf(LockManagers.InMemoryLockManager.class);
+    Assertions.assertThat(LockManagers.defaultLockManager())
+        .isInstanceOf(LockManagers.InMemoryLockManager.class);
   }
 
   @Test
@@ -53,13 +53,9 @@ public class TestLockManagers {
     }
 
     @Override
-    public void close() throws Exception {
-
-    }
+    public void close() throws Exception {}
 
     @Override
-    public void initialize(Map<String, String> properties) {
-
-    }
+    public void initialize(Map<String, String> properties) {}
   }
 }

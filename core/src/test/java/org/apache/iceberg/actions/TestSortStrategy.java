@@ -16,15 +16,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.actions;
-
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.IntStream;
-import org.apache.iceberg.AssertHelpers;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.MockFileScanTask;
@@ -36,6 +33,7 @@ import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.Types;
+import org.assertj.core.api.Assertions;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -80,63 +78,77 @@ public class TestSortStrategy extends TableTestBase {
 
   private List<FileScanTask> tasksForSortOrder(int sortOrderId, int... fileSizesMB) {
     ImmutableList.Builder<FileScanTask> files = ImmutableList.builder();
-    IntStream.of(fileSizesMB).forEach(length -> files.add(MockFileScanTask.mockTask(length * MB, sortOrderId)));
+    IntStream.of(fileSizesMB)
+        .forEach(length -> files.add(MockFileScanTask.mockTask(length * MB, sortOrderId)));
     return files.build();
   }
 
   @Test
   public void testInvalidSortOrder() {
-    AssertHelpers.assertThrows("Should not allow an unsorted Sort order", IllegalArgumentException.class,
-        () -> defaultSort().sortOrder(SortOrder.unsorted()).options(Collections.emptyMap()));
+    Assertions.assertThatThrownBy(
+            () -> defaultSort().sortOrder(SortOrder.unsorted()).options(Collections.emptyMap()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Cannot set strategy sort order: unsorted");
 
-    AssertHelpers.assertThrows("Should not allow a Sort order with bad columns", ValidationException.class,
-        () -> {
-          Schema badSchema = new Schema(
-              ImmutableList.of(Types.NestedField.required(0, "nonexistant", Types.IntegerType.get())));
+    Assertions.assertThatThrownBy(
+            () -> {
+              Schema badSchema =
+                  new Schema(
+                      ImmutableList.of(
+                          Types.NestedField.required(0, "nonexistant", Types.IntegerType.get())));
 
-          defaultSort()
-              .sortOrder(SortOrder.builderFor(badSchema).asc("nonexistant").build())
-              .options(Collections.emptyMap());
-        });
+              defaultSort()
+                  .sortOrder(SortOrder.builderFor(badSchema).asc("nonexistant").build())
+                  .options(Collections.emptyMap());
+            })
+        .isInstanceOf(ValidationException.class)
+        .hasMessageStartingWith("Cannot find field 'nonexistant' in struct");
   }
 
   @Test
   public void testSelectAll() {
-    List<FileScanTask> invalid = ImmutableList.<FileScanTask>builder()
-        .addAll(tasksForSortOrder(-1, 500, 500, 500, 500))
-        .addAll(tasksForSortOrder(table.sortOrder().orderId(), 10, 10, 2000, 10))
-        .build();
+    List<FileScanTask> invalid =
+        ImmutableList.<FileScanTask>builder()
+            .addAll(tasksForSortOrder(-1, 500, 500, 500, 500))
+            .addAll(tasksForSortOrder(table.sortOrder().orderId(), 10, 10, 2000, 10))
+            .build();
 
-    List<FileScanTask> expected = ImmutableList.<FileScanTask>builder()
-        .addAll(invalid)
-        .addAll(tasksForSortOrder(table.sortOrder().orderId(), 500, 490, 520))
-        .build();
+    List<FileScanTask> expected =
+        ImmutableList.<FileScanTask>builder()
+            .addAll(invalid)
+            .addAll(tasksForSortOrder(table.sortOrder().orderId(), 500, 490, 520))
+            .build();
 
-    RewriteStrategy strategy = defaultSort().options(ImmutableMap.of(SortStrategy.REWRITE_ALL, "true"));
+    RewriteStrategy strategy =
+        defaultSort().options(ImmutableMap.of(SortStrategy.REWRITE_ALL, "true"));
     List<FileScanTask> actual = ImmutableList.copyOf(strategy.selectFilesToRewrite(expected));
 
-    Assert.assertEquals("Should mark all files for rewrite",
-        expected, actual);
+    Assert.assertEquals("Should mark all files for rewrite", expected, actual);
   }
 
   @Test
   public void testUseSizeOptions() {
-    List<FileScanTask> expected = ImmutableList.<FileScanTask>builder()
-        .addAll(tasksForSortOrder(table.sortOrder().orderId(), 498, 551))
-        .build();
+    List<FileScanTask> expected =
+        ImmutableList.<FileScanTask>builder()
+            .addAll(tasksForSortOrder(table.sortOrder().orderId(), 498, 551))
+            .build();
 
-    List<FileScanTask> fileScanTasks = ImmutableList.<FileScanTask>builder()
-        .addAll(expected)
-        .addAll(tasksForSortOrder(table.sortOrder().orderId(), 500, 500))
-        .build();
+    List<FileScanTask> fileScanTasks =
+        ImmutableList.<FileScanTask>builder()
+            .addAll(expected)
+            .addAll(tasksForSortOrder(table.sortOrder().orderId(), 500, 500))
+            .build();
 
-    RewriteStrategy strategy = defaultSort().options(ImmutableMap.of(
-        SortStrategy.MAX_FILE_SIZE_BYTES, Long.toString(550 * MB),
-        SortStrategy.MIN_FILE_SIZE_BYTES, Long.toString(499 * MB)));
+    RewriteStrategy strategy =
+        defaultSort()
+            .options(
+                ImmutableMap.of(
+                    SortStrategy.MAX_FILE_SIZE_BYTES, Long.toString(550 * MB),
+                    SortStrategy.MIN_FILE_SIZE_BYTES, Long.toString(499 * MB)));
 
     List<FileScanTask> actual = ImmutableList.copyOf(strategy.selectFilesToRewrite(fileScanTasks));
 
-    Assert.assertEquals("Should mark files for rewrite with adjusted min and max size",
-        expected, actual);
+    Assert.assertEquals(
+        "Should mark files for rewrite with adjusted min and max size", expected, actual);
   }
 }

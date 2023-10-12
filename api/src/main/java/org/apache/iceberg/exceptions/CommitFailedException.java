@@ -16,15 +16,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.exceptions;
 
 import com.google.errorprone.annotations.FormatMethod;
 
-/**
- * Exception raised when a commit fails because of out of date metadata.
- */
-public class CommitFailedException extends RuntimeException {
+/** Exception raised when a commit fails because of out of date metadata. */
+public class CommitFailedException extends RuntimeException implements CleanableFailure {
   @FormatMethod
   public CommitFailedException(String message, Object... args) {
     super(String.format(message, args));
@@ -33,5 +30,9 @@ public class CommitFailedException extends RuntimeException {
   @FormatMethod
   public CommitFailedException(Throwable cause, String message, Object... args) {
     super(String.format(message, args), cause);
+  }
+
+  public CommitFailedException(Throwable cause) {
+    super(cause);
   }
 }

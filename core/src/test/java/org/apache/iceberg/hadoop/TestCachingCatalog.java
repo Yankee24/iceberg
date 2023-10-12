@@ -16,7 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.hadoop;
 
 import com.github.benmanes.caffeine.cache.Cache;
@@ -30,7 +29,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.apache.iceberg.AssertHelpers;
 import org.apache.iceberg.CachingCatalog;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.MetadataTableType;
@@ -44,10 +42,9 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.util.FakeTicker;
 import org.assertj.core.api.Assertions;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestCachingCatalog extends HadoopTableTestBase {
 
@@ -56,12 +53,12 @@ public class TestCachingCatalog extends HadoopTableTestBase {
 
   private FakeTicker ticker;
 
-  @Before
+  @BeforeEach
   public void beforeEach() {
     this.ticker = new FakeTicker();
   }
 
-  @After
+  @AfterEach
   public void afterEach() {
     this.ticker = null;
   }
@@ -79,7 +76,8 @@ public class TestCachingCatalog extends HadoopTableTestBase {
     TableIdentifier filesMetaTableIdent = TableIdentifier.of("db", "ns1", "ns2", "tbl", "files");
     Table filesMetaTable = catalog.loadTable(filesMetaTableIdent);
 
-    TableIdentifier manifestsMetaTableIdent = TableIdentifier.of("db", "ns1", "ns2", "tbl", "manifests");
+    TableIdentifier manifestsMetaTableIdent =
+        TableIdentifier.of("db", "ns1", "ns2", "tbl", "manifests");
     Table manifestsMetaTable = catalog.loadTable(manifestsMetaTableIdent);
 
     table.newAppend().appendFile(FILE_B).commit();
@@ -88,15 +86,15 @@ public class TestCachingCatalog extends HadoopTableTestBase {
     Table manifestsMetaTable2 = catalog.loadTable(manifestsMetaTableIdent);
 
     // metadata tables are cached
-    Assert.assertEquals(filesMetaTable2, filesMetaTable);
-    Assert.assertEquals(manifestsMetaTable2, manifestsMetaTable);
+    Assertions.assertThat(filesMetaTable2).isEqualTo(filesMetaTable);
+    Assertions.assertThat(manifestsMetaTable2).isEqualTo(manifestsMetaTable);
 
     // the current snapshot of origin table is updated after committing
-    Assert.assertNotEquals(table.currentSnapshot(), oldSnapshot);
+    Assertions.assertThat(table.currentSnapshot()).isNotEqualTo(oldSnapshot);
 
     // underlying table operation in metadata tables are shared with the origin table
-    Assert.assertEquals(filesMetaTable2.currentSnapshot(), table.currentSnapshot());
-    Assert.assertEquals(manifestsMetaTable2.currentSnapshot(), table.currentSnapshot());
+    Assertions.assertThat(filesMetaTable2.currentSnapshot()).isEqualTo(table.currentSnapshot());
+    Assertions.assertThat(manifestsMetaTable2.currentSnapshot()).isEqualTo(table.currentSnapshot());
   }
 
   @Test
@@ -115,7 +113,8 @@ public class TestCachingCatalog extends HadoopTableTestBase {
     // populate the cache with metadata tables
     for (MetadataTableType type : MetadataTableType.values()) {
       catalog.loadTable(TableIdentifier.parse(tableIdent + "." + type.name()));
-      catalog.loadTable(TableIdentifier.parse(tableIdent + "." + type.name().toLowerCase(Locale.ROOT)));
+      catalog.loadTable(
+          TableIdentifier.parse(tableIdent + "." + type.name().toLowerCase(Locale.ROOT)));
     }
 
     // drop the original table
@@ -129,17 +128,22 @@ public class TestCachingCatalog extends HadoopTableTestBase {
     // remember the new snapshot
     Snapshot newSnapshot = table.currentSnapshot();
 
-    Assert.assertNotEquals("Snapshots must be different", oldSnapshot, newSnapshot);
+    Assertions.assertThat(newSnapshot).as("Snapshots must be different").isNotEqualTo(oldSnapshot);
 
     // validate metadata tables were correctly invalidated
     for (MetadataTableType type : MetadataTableType.values()) {
       TableIdentifier metadataIdent1 = TableIdentifier.parse(tableIdent + "." + type.name());
       Table metadataTable1 = catalog.loadTable(metadataIdent1);
-      Assert.assertEquals("Snapshot must be new", newSnapshot, metadataTable1.currentSnapshot());
+      Assertions.assertThat(metadataTable1.currentSnapshot())
+          .as("Snapshot must be new")
+          .isEqualTo(newSnapshot);
 
-      TableIdentifier metadataIdent2 = TableIdentifier.parse(tableIdent + "." + type.name().toLowerCase(Locale.ROOT));
+      TableIdentifier metadataIdent2 =
+          TableIdentifier.parse(tableIdent + "." + type.name().toLowerCase(Locale.ROOT));
       Table metadataTable2 = catalog.loadTable(metadataIdent2);
-      Assert.assertEquals("Snapshot must be new", newSnapshot, metadataTable2.currentSnapshot());
+      Assertions.assertThat(metadataTable2.currentSnapshot())
+          .as("Snapshot must be new")
+          .isEqualTo(newSnapshot);
     }
   }
 
@@ -150,16 +154,20 @@ public class TestCachingCatalog extends HadoopTableTestBase {
     catalog.createTable(tableIdent, SCHEMA, SPEC, ImmutableMap.of("key2", "value2"));
 
     Table table = catalog.loadTable(tableIdent);
-    Assert.assertEquals("Name must match", "hadoop.db.ns1.ns2.tbl", table.name());
+    Assertions.assertThat(table.name()).as("Name must match").isEqualTo("hadoop.db.ns1.ns2.tbl");
 
-    TableIdentifier snapshotsTableIdent = TableIdentifier.of("db", "ns1", "ns2", "tbl", "snapshots");
+    TableIdentifier snapshotsTableIdent =
+        TableIdentifier.of("db", "ns1", "ns2", "tbl", "snapshots");
     Table snapshotsTable = catalog.loadTable(snapshotsTableIdent);
-    Assert.assertEquals("Name must match", "hadoop.db.ns1.ns2.tbl.snapshots", snapshotsTable.name());
+    Assertions.assertThat(snapshotsTable.name())
+        .as("Name must match")
+        .isEqualTo("hadoop.db.ns1.ns2.tbl.snapshots");
   }
 
   @Test
   public void testTableExpiresAfterInterval() throws IOException {
-    TestableCachingCatalog catalog = TestableCachingCatalog.wrap(hadoopCatalog(), EXPIRATION_TTL, ticker);
+    TestableCachingCatalog catalog =
+        TestableCachingCatalog.wrap(hadoopCatalog(), EXPIRATION_TTL, ticker);
 
     Namespace namespace = Namespace.of("db", "ns1", "ns2");
     TableIdentifier tableIdent = TableIdentifier.of(namespace, "tbl");
@@ -167,21 +175,29 @@ public class TestCachingCatalog extends HadoopTableTestBase {
 
     // Ensure table is cached with full ttl remaining upon creation
     Assertions.assertThat(catalog.cache().asMap()).containsKey(tableIdent);
-    Assertions.assertThat(catalog.remainingAgeFor(tableIdent)).isPresent().get().isEqualTo(EXPIRATION_TTL);
+    Assertions.assertThat(catalog.remainingAgeFor(tableIdent))
+        .isPresent()
+        .get()
+        .isEqualTo(EXPIRATION_TTL);
 
     ticker.advance(HALF_OF_EXPIRATION);
     Assertions.assertThat(catalog.cache().asMap()).containsKey(tableIdent);
-    Assertions.assertThat(catalog.ageOf(tableIdent)).isPresent().get().isEqualTo(HALF_OF_EXPIRATION);
+    Assertions.assertThat(catalog.ageOf(tableIdent))
+        .isPresent()
+        .get()
+        .isEqualTo(HALF_OF_EXPIRATION);
 
     ticker.advance(HALF_OF_EXPIRATION.plus(Duration.ofSeconds(10)));
     Assertions.assertThat(catalog.cache().asMap()).doesNotContainKey(tableIdent);
-    Assert.assertNotSame("CachingCatalog should return a new instance after expiration",
-        table, catalog.loadTable(tableIdent));
+    Assertions.assertThat(catalog.loadTable(tableIdent))
+        .as("CachingCatalog should return a new instance after expiration")
+        .isNotSameAs(table);
   }
 
   @Test
   public void testCatalogExpirationTtlRefreshesAfterAccessViaCatalog() throws IOException {
-    TestableCachingCatalog catalog = TestableCachingCatalog.wrap(hadoopCatalog(), EXPIRATION_TTL, ticker);
+    TestableCachingCatalog catalog =
+        TestableCachingCatalog.wrap(hadoopCatalog(), EXPIRATION_TTL, ticker);
     Namespace namespace = Namespace.of("db", "ns1", "ns2");
     TableIdentifier tableIdent = TableIdentifier.of(namespace, "tbl");
 
@@ -191,14 +207,25 @@ public class TestCachingCatalog extends HadoopTableTestBase {
 
     ticker.advance(HALF_OF_EXPIRATION);
     Assertions.assertThat(catalog.cache().asMap()).containsKey(tableIdent);
-    Assertions.assertThat(catalog.ageOf(tableIdent)).isPresent().get().isEqualTo(HALF_OF_EXPIRATION);
-    Assertions.assertThat(catalog.remainingAgeFor(tableIdent)).isPresent().get().isEqualTo(HALF_OF_EXPIRATION);
+    Assertions.assertThat(catalog.ageOf(tableIdent))
+        .isPresent()
+        .get()
+        .isEqualTo(HALF_OF_EXPIRATION);
+    Assertions.assertThat(catalog.remainingAgeFor(tableIdent))
+        .isPresent()
+        .get()
+        .isEqualTo(HALF_OF_EXPIRATION);
 
     Duration oneMinute = Duration.ofMinutes(1L);
     ticker.advance(oneMinute);
     Assertions.assertThat(catalog.cache().asMap()).containsKey(tableIdent);
-    Assertions.assertThat(catalog.ageOf(tableIdent)).isPresent().get().isEqualTo(HALF_OF_EXPIRATION.plus(oneMinute));
-    Assertions.assertThat(catalog.remainingAgeFor(tableIdent)).get().isEqualTo(HALF_OF_EXPIRATION.minus(oneMinute));
+    Assertions.assertThat(catalog.ageOf(tableIdent))
+        .isPresent()
+        .get()
+        .isEqualTo(HALF_OF_EXPIRATION.plus(oneMinute));
+    Assertions.assertThat(catalog.remainingAgeFor(tableIdent))
+        .get()
+        .isEqualTo(HALF_OF_EXPIRATION.minus(oneMinute));
 
     // Access the table via the catalog, which should refresh the TTL
     Table table = catalog.loadTable(tableIdent);
@@ -221,7 +248,8 @@ public class TestCachingCatalog extends HadoopTableTestBase {
 
   @Test
   public void testCacheExpirationEagerlyRemovesMetadataTables() throws IOException {
-    TestableCachingCatalog catalog = TestableCachingCatalog.wrap(hadoopCatalog(), EXPIRATION_TTL, ticker);
+    TestableCachingCatalog catalog =
+        TestableCachingCatalog.wrap(hadoopCatalog(), EXPIRATION_TTL, ticker);
     Namespace namespace = Namespace.of("db", "ns1", "ns2");
     TableIdentifier tableIdent = TableIdentifier.of(namespace, "tbl");
     Table table = catalog.createTable(tableIdent, SCHEMA, SPEC, ImmutableMap.of("key2", "value2"));
@@ -242,8 +270,9 @@ public class TestCachingCatalog extends HadoopTableTestBase {
         .isNotEmpty()
         .allMatch(age -> age.isPresent() && age.get().equals(Duration.ZERO));
 
-    Assert.assertEquals("Loading a non-cached metadata table should refresh the main table's age",
-        Optional.of(EXPIRATION_TTL), catalog.remainingAgeFor(tableIdent));
+    Assertions.assertThat(catalog.remainingAgeFor(tableIdent))
+        .as("Loading a non-cached metadata table should refresh the main table's age")
+        .isEqualTo(Optional.of(EXPIRATION_TTL));
 
     // Move time forward and access already cached metadata tables.
     ticker.advance(HALF_OF_EXPIRATION);
@@ -252,22 +281,28 @@ public class TestCachingCatalog extends HadoopTableTestBase {
         .isNotEmpty()
         .allMatch(age -> age.isPresent() && age.get().equals(Duration.ZERO));
 
-    Assert.assertEquals("Accessing a cached metadata table should not affect the main table's age",
-        Optional.of(HALF_OF_EXPIRATION), catalog.remainingAgeFor(tableIdent));
+    Assertions.assertThat(catalog.remainingAgeFor(tableIdent))
+        .as("Accessing a cached metadata table should not affect the main table's age")
+        .isEqualTo(Optional.of(HALF_OF_EXPIRATION));
 
     // Move time forward so the data table drops.
     ticker.advance(HALF_OF_EXPIRATION);
     Assertions.assertThat(catalog.cache().asMap()).doesNotContainKey(tableIdent);
 
-    Arrays.stream(metadataTables(tableIdent)).forEach(metadataTable ->
-        Assert.assertFalse("When a data table expires, its metadata tables should expire regardless of age",
-            catalog.cache().asMap().containsKey(metadataTable)));
+    Arrays.stream(metadataTables(tableIdent))
+        .forEach(
+            metadataTable ->
+                Assertions.assertThat(catalog.cache().asMap())
+                    .as(
+                        "When a data table expires, its metadata tables should expire regardless of age")
+                    .doesNotContainKeys(metadataTable));
   }
 
   @Test
   public void testDeadlock() throws IOException, InterruptedException {
     HadoopCatalog underlyingCatalog = hadoopCatalog();
-    TestableCachingCatalog catalog = TestableCachingCatalog.wrap(underlyingCatalog, Duration.ofSeconds(1), ticker);
+    TestableCachingCatalog catalog =
+        TestableCachingCatalog.wrap(underlyingCatalog, Duration.ofSeconds(1), ticker);
     Namespace namespace = Namespace.of("db", "ns1", "ns2");
     int numThreads = 20;
     List<TableIdentifier> createdTables = Lists.newArrayList();
@@ -284,17 +319,19 @@ public class TestCachingCatalog extends HadoopTableTestBase {
     for (int i = 0; i < numThreads; i++) {
       if (i % 2 == 0) {
         String table = "tbl" + i;
-        executor.submit(() -> {
-          ticker.advance(Duration.ofSeconds(2));
-          cache.get(TableIdentifier.of(namespace, table), underlyingCatalog::loadTable);
-          cacheGetCount.incrementAndGet();
-        });
+        executor.submit(
+            () -> {
+              ticker.advance(Duration.ofSeconds(2));
+              cache.get(TableIdentifier.of(namespace, table), underlyingCatalog::loadTable);
+              cacheGetCount.incrementAndGet();
+            });
       } else {
-        executor.submit(() -> {
-          ticker.advance(Duration.ofSeconds(2));
-          cache.cleanUp();
-          cacheCleanupCount.incrementAndGet();
-        });
+        executor.submit(
+            () -> {
+              ticker.advance(Duration.ofSeconds(2));
+              cache.cleanUp();
+              cacheCleanupCount.incrementAndGet();
+            });
       }
     }
     executor.awaitTermination(2, TimeUnit.SECONDS);
@@ -307,21 +344,40 @@ public class TestCachingCatalog extends HadoopTableTestBase {
 
   @Test
   public void testCachingCatalogRejectsExpirationIntervalOfZero() {
-    AssertHelpers
-        .assertThrows(
-        "Caching catalog should disallow an expiration interval of zero, as zero signifies not to cache at all",
-            IllegalArgumentException.class,
-            () -> TestableCachingCatalog.wrap(hadoopCatalog(), Duration.ZERO, ticker));
+    Assertions.assertThatThrownBy(
+            () -> TestableCachingCatalog.wrap(hadoopCatalog(), Duration.ZERO, ticker))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage(
+            "When cache.expiration-interval-ms is set to 0, the catalog cache should be disabled. This indicates a bug.");
   }
 
   @Test
   public void testCacheExpirationIsDisabledByANegativeValue() throws IOException {
-    TestableCachingCatalog catalog = TestableCachingCatalog
-        .wrap(hadoopCatalog(), Duration.ofMillis(CatalogProperties.CACHE_EXPIRATION_INTERVAL_MS_OFF), ticker);
+    TestableCachingCatalog catalog =
+        TestableCachingCatalog.wrap(
+            hadoopCatalog(),
+            Duration.ofMillis(CatalogProperties.CACHE_EXPIRATION_INTERVAL_MS_OFF),
+            ticker);
 
-    Assert.assertFalse(
-        "When a negative value is used as the expiration interval, the cache should not expire entries based on a TTL",
-        catalog.isCacheExpirationEnabled());
+    Assertions.assertThat(catalog.isCacheExpirationEnabled())
+        .as(
+            "When a negative value is used as the expiration interval, the cache should not expire entries based on a TTL")
+        .isFalse();
+  }
+
+  @Test
+  public void testInvalidateTableForChainedCachingCatalogs() throws Exception {
+    TestableCachingCatalog wrappedCatalog =
+        TestableCachingCatalog.wrap(hadoopCatalog(), EXPIRATION_TTL, ticker);
+    TestableCachingCatalog catalog =
+        TestableCachingCatalog.wrap(wrappedCatalog, EXPIRATION_TTL, ticker);
+    Namespace namespace = Namespace.of("db", "ns1", "ns2");
+    TableIdentifier tableIdent = TableIdentifier.of(namespace, "tbl");
+    catalog.createTable(tableIdent, SCHEMA, SPEC, ImmutableMap.of("key2", "value2"));
+    Assertions.assertThat(catalog.cache().asMap()).containsKey(tableIdent);
+    catalog.invalidateTable(tableIdent);
+    Assertions.assertThat(catalog.cache().asMap()).doesNotContainKey(tableIdent);
+    Assertions.assertThat(wrappedCatalog.cache().asMap()).doesNotContainKey(tableIdent);
   }
 
   public static TableIdentifier[] metadataTables(TableIdentifier tableIdent) {

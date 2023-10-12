@@ -16,12 +16,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg;
 
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -37,18 +37,21 @@ import org.apache.iceberg.util.ArrayUtil;
 import org.apache.iceberg.util.ByteBuffers;
 import org.apache.iceberg.util.SerializableMap;
 
-/**
- * Base class for both {@link DataFile} and {@link DeleteFile}.
- */
+/** Base class for both {@link DataFile} and {@link DeleteFile}. */
 abstract class BaseFile<F>
-    implements ContentFile<F>, IndexedRecord, StructLike, SpecificData.SchemaConstructable, Serializable {
+    implements ContentFile<F>,
+        IndexedRecord,
+        StructLike,
+        SpecificData.SchemaConstructable,
+        Serializable {
   static final Types.StructType EMPTY_STRUCT_TYPE = Types.StructType.of();
-  static final PartitionData EMPTY_PARTITION_DATA = new PartitionData(EMPTY_STRUCT_TYPE) {
-    @Override
-    public PartitionData copy() {
-      return this; // this does not change
-    }
-  };
+  static final PartitionData EMPTY_PARTITION_DATA =
+      new PartitionData(EMPTY_STRUCT_TYPE) {
+        @Override
+        public PartitionData copy() {
+          return this; // this does not change
+        }
+      };
 
   private int[] fromProjectionPos;
   private Types.StructType partitionType;
@@ -61,6 +64,8 @@ abstract class BaseFile<F>
   private PartitionData partitionData = null;
   private Long recordCount = null;
   private long fileSizeInBytes = -1L;
+  private Long dataSequenceNumber = null;
+  private Long fileSequenceNumber = null;
 
   // optional fields
   private Map<Integer, Long> columnSizes = null;
@@ -77,9 +82,10 @@ abstract class BaseFile<F>
   // cached schema
   private transient Schema avroSchema = null;
 
-  /**
-   * Used by Avro reflection to instantiate this class when reading manifest files.
-   */
+  // lazy variables
+  private transient volatile List<Long> splitOffsetList = null;
+
+  /** Used by Avro reflection to instantiate this class when reading manifest files. */
   BaseFile(Schema avroSchema) {
     this.avroSchema = avroSchema;
 
@@ -116,12 +122,24 @@ abstract class BaseFile<F>
     this.partitionData = new PartitionData(partitionType);
   }
 
-  BaseFile(int specId, FileContent content, String filePath, FileFormat format,
-           PartitionData partition, long fileSizeInBytes, long recordCount,
-           Map<Integer, Long> columnSizes, Map<Integer, Long> valueCounts,
-           Map<Integer, Long> nullValueCounts, Map<Integer, Long> nanValueCounts,
-           Map<Integer, ByteBuffer> lowerBounds, Map<Integer, ByteBuffer> upperBounds, List<Long> splitOffsets,
-           int[] equalityFieldIds, Integer sortOrderId, ByteBuffer keyMetadata) {
+  BaseFile(
+      int specId,
+      FileContent content,
+      String filePath,
+      FileFormat format,
+      PartitionData partition,
+      long fileSizeInBytes,
+      long recordCount,
+      Map<Integer, Long> columnSizes,
+      Map<Integer, Long> valueCounts,
+      Map<Integer, Long> nullValueCounts,
+      Map<Integer, Long> nanValueCounts,
+      Map<Integer, ByteBuffer> lowerBounds,
+      Map<Integer, ByteBuffer> upperBounds,
+      List<Long> splitOffsets,
+      int[] equalityFieldIds,
+      Integer sortOrderId,
+      ByteBuffer keyMetadata) {
     this.partitionSpecId = specId;
     this.content = content;
     this.filePath = filePath;
@@ -183,18 +201,25 @@ abstract class BaseFile<F>
       this.upperBounds = null;
     }
     this.fromProjectionPos = toCopy.fromProjectionPos;
-    this.keyMetadata = toCopy.keyMetadata == null ? null : Arrays.copyOf(toCopy.keyMetadata, toCopy.keyMetadata.length);
-    this.splitOffsets = toCopy.splitOffsets == null ? null :
-        Arrays.copyOf(toCopy.splitOffsets, toCopy.splitOffsets.length);
-    this.equalityIds = toCopy.equalityIds != null ? Arrays.copyOf(toCopy.equalityIds, toCopy.equalityIds.length) : null;
+    this.keyMetadata =
+        toCopy.keyMetadata == null
+            ? null
+            : Arrays.copyOf(toCopy.keyMetadata, toCopy.keyMetadata.length);
+    this.splitOffsets =
+        toCopy.splitOffsets == null
+            ? null
+            : Arrays.copyOf(toCopy.splitOffsets, toCopy.splitOffsets.length);
+    this.equalityIds =
+        toCopy.equalityIds != null
+            ? Arrays.copyOf(toCopy.equalityIds, toCopy.equalityIds.length)
+            : null;
     this.sortOrderId = toCopy.sortOrderId;
+    this.dataSequenceNumber = toCopy.dataSequenceNumber;
+    this.fileSequenceNumber = toCopy.fileSequenceNumber;
   }
 
-  /**
-   * Constructor for Java serialization.
-   */
-  BaseFile() {
-  }
+  /** Constructor for Java serialization. */
+  BaseFile() {}
 
   @Override
   public int specId() {
@@ -203,6 +228,24 @@ abstract class BaseFile<F>
 
   void setSpecId(int specId) {
     this.partitionSpecId = specId;
+  }
+
+  @Override
+  public Long dataSequenceNumber() {
+    return dataSequenceNumber;
+  }
+
+  public void setDataSequenceNumber(Long dataSequenceNumber) {
+    this.dataSequenceNumber = dataSequenceNumber;
+  }
+
+  @Override
+  public Long fileSequenceNumber() {
+    return fileSequenceNumber;
+  }
+
+  public void setFileSequenceNumber(Long fileSequenceNumber) {
+    this.fileSequenceNumber = fileSequenceNumber;
   }
 
   protected abstract Schema getAvroSchema(Types.StructType partitionStruct);
@@ -232,7 +275,7 @@ abstract class BaseFile<F>
         this.filePath = value.toString();
         return;
       case 2:
-        this.format = FileFormat.valueOf(value.toString());
+        this.format = FileFormat.fromString(value.toString());
         return;
       case 3:
         this.partitionSpecId = (value != null) ? (Integer) value : -1;
@@ -405,12 +448,12 @@ abstract class BaseFile<F>
 
   @Override
   public Map<Integer, ByteBuffer> lowerBounds() {
-    return toReadableMap(lowerBounds);
+    return toReadableByteBufferMap(lowerBounds);
   }
 
   @Override
   public Map<Integer, ByteBuffer> upperBounds() {
-    return toReadableMap(upperBounds);
+    return toReadableByteBufferMap(upperBounds);
   }
 
   @Override
@@ -420,7 +463,15 @@ abstract class BaseFile<F>
 
   @Override
   public List<Long> splitOffsets() {
-    return ArrayUtil.toLongList(splitOffsets);
+    if (splitOffsetList == null && splitOffsets != null) {
+      this.splitOffsetList = ArrayUtil.toUnmodifiableLongList(splitOffsets);
+    }
+
+    return splitOffsetList;
+  }
+
+  long[] splitOffsetArray() {
+    return splitOffsets;
   }
 
   @Override
@@ -434,10 +485,22 @@ abstract class BaseFile<F>
   }
 
   private static <K, V> Map<K, V> toReadableMap(Map<K, V> map) {
-    if (map instanceof SerializableMap) {
+    if (map == null) {
+      return null;
+    } else if (map instanceof SerializableMap) {
       return ((SerializableMap<K, V>) map).immutableMap();
     } else {
-      return map;
+      return Collections.unmodifiableMap(map);
+    }
+  }
+
+  private static Map<Integer, ByteBuffer> toReadableByteBufferMap(Map<Integer, ByteBuffer> map) {
+    if (map == null) {
+      return null;
+    } else if (map instanceof SerializableByteBufferMap) {
+      return ((SerializableByteBufferMap) map).immutableMap();
+    } else {
+      return Collections.unmodifiableMap(map);
     }
   }
 
@@ -461,6 +524,8 @@ abstract class BaseFile<F>
         .add("split_offsets", splitOffsets == null ? "null" : splitOffsets())
         .add("equality_ids", equalityIds == null ? "null" : equalityFieldIds())
         .add("sort_order_id", sortOrderId)
+        .add("data_sequence_number", dataSequenceNumber == null ? "null" : dataSequenceNumber)
+        .add("file_sequence_number", fileSequenceNumber == null ? "null" : fileSequenceNumber)
         .toString();
   }
 }

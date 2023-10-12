@@ -16,8 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.hive;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -32,35 +34,34 @@ import org.apache.hadoop.hive.metastore.api.FunctionType;
 import org.apache.hadoop.hive.metastore.api.GetAllFunctionsResponse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
-import org.apache.iceberg.AssertHelpers;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.thrift.transport.TTransportException;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 public class TestHiveClientPool {
 
-  private static final String HIVE_SITE_CONTENT = "<?xml version=\"1.0\"?>\n" +
-          "<?xml-stylesheet type=\"text/xsl\" href=\"configuration.xsl\"?>\n" +
-          "<configuration>\n" +
-          "  <property>\n" +
-          "    <name>hive.metastore.sasl.enabled</name>\n" +
-          "    <value>true</value>\n" +
-          "  </property>\n" +
-          "</configuration>\n";
+  private static final String HIVE_SITE_CONTENT =
+      "<?xml version=\"1.0\"?>\n"
+          + "<?xml-stylesheet type=\"text/xsl\" href=\"configuration.xsl\"?>\n"
+          + "<configuration>\n"
+          + "  <property>\n"
+          + "    <name>hive.metastore.sasl.enabled</name>\n"
+          + "    <value>true</value>\n"
+          + "  </property>\n"
+          + "</configuration>\n";
 
   HiveClientPool clients;
 
-  @Before
+  @BeforeEach
   public void before() {
     HiveClientPool clientPool = new HiveClientPool(2, new Configuration());
     clients = Mockito.spy(clientPool);
   }
 
-  @After
+  @AfterEach
   public void after() {
     clients.close();
     clients = null;
@@ -74,19 +75,20 @@ public class TestHiveClientPool {
     HiveClientPool clientPool = new HiveClientPool(10, conf);
     HiveConf clientConf = clientPool.hiveConf();
 
-    Assert.assertEquals(conf.get(HiveConf.ConfVars.METASTOREWAREHOUSE.varname),
-            clientConf.get(HiveConf.ConfVars.METASTOREWAREHOUSE.varname));
-    Assert.assertEquals(10, clientPool.poolSize());
+    assertThat(clientConf.get(HiveConf.ConfVars.METASTOREWAREHOUSE.varname))
+        .isEqualTo(conf.get(HiveConf.ConfVars.METASTOREWAREHOUSE.varname));
+    assertThat(clientPool.poolSize()).isEqualTo(10);
 
     // 'hive.metastore.sasl.enabled' should be 'true' as defined in xml
-    Assert.assertEquals(conf.get(HiveConf.ConfVars.METASTORE_USE_THRIFT_SASL.varname),
-            clientConf.get(HiveConf.ConfVars.METASTORE_USE_THRIFT_SASL.varname));
-    Assert.assertTrue(clientConf.getBoolVar(HiveConf.ConfVars.METASTORE_USE_THRIFT_SASL));
+    assertThat(clientConf.get(HiveConf.ConfVars.METASTORE_USE_THRIFT_SASL.varname))
+        .isEqualTo(conf.get(HiveConf.ConfVars.METASTORE_USE_THRIFT_SASL.varname));
+    assertThat(clientConf.getBoolVar(HiveConf.ConfVars.METASTORE_USE_THRIFT_SASL)).isTrue();
   }
 
   private HiveConf createHiveConf() {
     HiveConf hiveConf = new HiveConf();
-    try (InputStream inputStream = new ByteArrayInputStream(HIVE_SITE_CONTENT.getBytes(StandardCharsets.UTF_8))) {
+    try (InputStream inputStream =
+        new ByteArrayInputStream(HIVE_SITE_CONTENT.getBytes(StandardCharsets.UTF_8))) {
       hiveConf.addResource(inputStream, "for_test");
     } catch (IOException e) {
       throw new RuntimeException(e);
@@ -97,8 +99,9 @@ public class TestHiveClientPool {
   @Test
   public void testNewClientFailure() {
     Mockito.doThrow(new RuntimeException("Connection exception")).when(clients).newClient();
-    AssertHelpers.assertThrows("Should throw exception", RuntimeException.class,
-            "Connection exception", () -> clients.run(Object::toString));
+    assertThatThrownBy(() -> clients.run(Object::toString))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("Connection exception");
   }
 
   @Test
@@ -106,9 +109,11 @@ public class TestHiveClientPool {
     HiveMetaStoreClient hmsClient = Mockito.mock(HiveMetaStoreClient.class);
     Mockito.doReturn(hmsClient).when(clients).newClient();
     Mockito.doThrow(new MetaException("Another meta exception"))
-            .when(hmsClient).getTables(Mockito.anyString(), Mockito.anyString());
-    AssertHelpers.assertThrows("Should throw exception", MetaException.class,
-            "Another meta exception", () -> clients.run(client -> client.getTables("default", "t")));
+        .when(hmsClient)
+        .getTables(Mockito.anyString(), Mockito.anyString());
+    assertThatThrownBy(() -> clients.run(client -> client.getTables("default", "t")))
+        .isInstanceOf(MetaException.class)
+        .hasMessage("Another meta exception");
   }
 
   @Test
@@ -126,7 +131,8 @@ public class TestHiveClientPool {
 
     Mockito.doReturn(databases).when(newClient).getAllDatabases();
     // The return is OK when the reconnect method is called.
-    Assert.assertEquals(databases, clients.run(client -> client.getAllDatabases(), true));
+    assertThat((List<String>) clients.run(client -> client.getAllDatabases(), true))
+        .isEqualTo(databases);
 
     // Verify that the method is called.
     Mockito.verify(clients).reconnect(hmsClient);
@@ -143,10 +149,18 @@ public class TestHiveClientPool {
 
     GetAllFunctionsResponse response = new GetAllFunctionsResponse();
     response.addToFunctions(
-            new Function("concat", "db1", "classname", "root", PrincipalType.USER, 100, FunctionType.JAVA, null));
+        new Function(
+            "concat",
+            "db1",
+            "classname",
+            "root",
+            PrincipalType.USER,
+            100,
+            FunctionType.JAVA,
+            null));
     Mockito.doReturn(response).when(newClient).getAllFunctions();
-
-    Assert.assertEquals(response, clients.run(client -> client.getAllFunctions(), true));
+    assertThat((GetAllFunctionsResponse) clients.run(client -> client.getAllFunctions(), true))
+        .isEqualTo(response);
 
     Mockito.verify(clients).reconnect(hmsClient);
     Mockito.verify(clients, Mockito.never()).reconnect(newClient);

@@ -16,7 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg;
 
 import java.util.List;
@@ -30,10 +29,12 @@ import org.apache.iceberg.hadoop.HadoopFileIO;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.metrics.MetricsReport;
+import org.apache.iceberg.metrics.MetricsReporter;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.assertj.core.api.Assertions;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestCatalogUtil {
 
@@ -43,10 +44,11 @@ public class TestCatalogUtil {
     options.put("key", "val");
     Configuration hadoopConf = new Configuration();
     String name = "custom";
-    Catalog catalog = CatalogUtil.loadCatalog(TestCatalog.class.getName(), name, options, hadoopConf);
+    Catalog catalog =
+        CatalogUtil.loadCatalog(TestCatalog.class.getName(), name, options, hadoopConf);
     Assertions.assertThat(catalog).isInstanceOf(TestCatalog.class);
-    Assert.assertEquals(name, ((TestCatalog) catalog).catalogName);
-    Assert.assertEquals(options, ((TestCatalog) catalog).flinkOptions);
+    Assertions.assertThat(((TestCatalog) catalog).catalogName).isEqualTo(name);
+    Assertions.assertThat(((TestCatalog) catalog).catalogProperties).isEqualTo(options);
   }
 
   @Test
@@ -56,11 +58,12 @@ public class TestCatalogUtil {
     Configuration hadoopConf = new Configuration();
     hadoopConf.set("key", "val");
     String name = "custom";
-    Catalog catalog = CatalogUtil.loadCatalog(TestCatalogConfigurable.class.getName(), name, options, hadoopConf);
+    Catalog catalog =
+        CatalogUtil.loadCatalog(TestCatalogConfigurable.class.getName(), name, options, hadoopConf);
     Assertions.assertThat(catalog).isInstanceOf(TestCatalogConfigurable.class);
-    Assert.assertEquals(name, ((TestCatalogConfigurable) catalog).catalogName);
-    Assert.assertEquals(options, ((TestCatalogConfigurable) catalog).flinkOptions);
-    Assert.assertEquals(hadoopConf, ((TestCatalogConfigurable) catalog).configuration);
+    Assertions.assertThat(((TestCatalogConfigurable) catalog).catalogName).isEqualTo(name);
+    Assertions.assertThat(((TestCatalogConfigurable) catalog).catalogProperties).isEqualTo(options);
+    Assertions.assertThat(((TestCatalogConfigurable) catalog).configuration).isEqualTo(hadoopConf);
   }
 
   @Test
@@ -69,10 +72,14 @@ public class TestCatalogUtil {
     options.put("key", "val");
     Configuration hadoopConf = new Configuration();
     String name = "custom";
-    AssertHelpers.assertThrows("must have no-arg constructor",
-        IllegalArgumentException.class,
-        "NoSuchMethodException: org.apache.iceberg.TestCatalogUtil$TestCatalogBadConstructor.<init>()",
-        () -> CatalogUtil.loadCatalog(TestCatalogBadConstructor.class.getName(), name, options, hadoopConf));
+    Assertions.assertThatThrownBy(
+            () ->
+                CatalogUtil.loadCatalog(
+                    TestCatalogBadConstructor.class.getName(), name, options, hadoopConf))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot initialize Catalog implementation")
+        .hasMessageContaining(
+            "NoSuchMethodException: org.apache.iceberg.TestCatalogUtil$TestCatalogBadConstructor.<init>()");
   }
 
   @Test
@@ -82,10 +89,13 @@ public class TestCatalogUtil {
     Configuration hadoopConf = new Configuration();
     String name = "custom";
 
-    AssertHelpers.assertThrows("must implement catalog",
-        IllegalArgumentException.class,
-        "does not implement Catalog",
-        () -> CatalogUtil.loadCatalog(TestCatalogNoInterface.class.getName(), name, options, hadoopConf));
+    Assertions.assertThatThrownBy(
+            () ->
+                CatalogUtil.loadCatalog(
+                    TestCatalogNoInterface.class.getName(), name, options, hadoopConf))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot initialize Catalog")
+        .hasMessageContaining("does not implement Catalog");
   }
 
   @Test
@@ -96,10 +106,10 @@ public class TestCatalogUtil {
     String name = "custom";
 
     String impl = TestCatalogErrorConstructor.class.getName();
-    AssertHelpers.assertThrows("must be able to initialize catalog",
-        IllegalArgumentException.class,
-        "NoClassDefFoundError: Error while initializing class",
-        () -> CatalogUtil.loadCatalog(impl, name, options, hadoopConf));
+    Assertions.assertThatThrownBy(() -> CatalogUtil.loadCatalog(impl, name, options, hadoopConf))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot initialize Catalog implementation")
+        .hasMessageContaining("NoClassDefFoundError: Error while initializing class");
   }
 
   @Test
@@ -109,10 +119,10 @@ public class TestCatalogUtil {
     Configuration hadoopConf = new Configuration();
     String name = "custom";
     String impl = "CatalogDoesNotExist";
-    AssertHelpers.assertThrows("catalog must exist",
-        IllegalArgumentException.class,
-        "java.lang.ClassNotFoundException: CatalogDoesNotExist",
-        () -> CatalogUtil.loadCatalog(impl, name, options, hadoopConf));
+    Assertions.assertThatThrownBy(() -> CatalogUtil.loadCatalog(impl, name, options, hadoopConf))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot initialize Catalog implementation")
+        .hasMessageContaining("java.lang.ClassNotFoundException: CatalogDoesNotExist");
   }
 
   @Test
@@ -121,41 +131,46 @@ public class TestCatalogUtil {
     properties.put("key", "val");
     FileIO fileIO = CatalogUtil.loadFileIO(TestFileIONoArg.class.getName(), properties, null);
     Assertions.assertThat(fileIO).isInstanceOf(TestFileIONoArg.class);
-    Assert.assertEquals(properties, ((TestFileIONoArg) fileIO).map);
+    Assertions.assertThat(((TestFileIONoArg) fileIO).map).isEqualTo(properties);
   }
 
   @Test
   public void loadCustomFileIO_hadoopConfigConstructor() {
     Configuration configuration = new Configuration();
     configuration.set("key", "val");
-    FileIO fileIO = CatalogUtil.loadFileIO(HadoopFileIO.class.getName(), Maps.newHashMap(), configuration);
+    FileIO fileIO =
+        CatalogUtil.loadFileIO(HadoopFileIO.class.getName(), Maps.newHashMap(), configuration);
     Assertions.assertThat(fileIO).isInstanceOf(HadoopFileIO.class);
-    Assert.assertEquals("val", ((HadoopFileIO) fileIO).conf().get("key"));
+    Assertions.assertThat(((HadoopFileIO) fileIO).conf().get("key")).isEqualTo("val");
   }
 
   @Test
   public void loadCustomFileIO_configurable() {
     Configuration configuration = new Configuration();
     configuration.set("key", "val");
-    FileIO fileIO = CatalogUtil.loadFileIO(TestFileIOConfigurable.class.getName(), Maps.newHashMap(), configuration);
+    FileIO fileIO =
+        CatalogUtil.loadFileIO(
+            TestFileIOConfigurable.class.getName(), Maps.newHashMap(), configuration);
     Assertions.assertThat(fileIO).isInstanceOf(TestFileIOConfigurable.class);
-    Assert.assertEquals(configuration, ((TestFileIOConfigurable) fileIO).configuration);
+    Assertions.assertThat(((TestFileIOConfigurable) fileIO).configuration).isEqualTo(configuration);
   }
 
   @Test
   public void loadCustomFileIO_badArg() {
-    AssertHelpers.assertThrows("cannot find constructor",
-        IllegalArgumentException.class,
-        "missing no-arg constructor",
-        () -> CatalogUtil.loadFileIO(TestFileIOBadArg.class.getName(), Maps.newHashMap(), null));
+    Assertions.assertThatThrownBy(
+            () -> CatalogUtil.loadFileIO(TestFileIOBadArg.class.getName(), Maps.newHashMap(), null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot initialize FileIO, missing no-arg constructor");
   }
 
   @Test
   public void loadCustomFileIO_badClass() {
-    AssertHelpers.assertThrows("cannot cast",
-        IllegalArgumentException.class,
-        "does not implement FileIO",
-        () -> CatalogUtil.loadFileIO(TestFileIONotImpl.class.getName(), Maps.newHashMap(), null));
+    Assertions.assertThatThrownBy(
+            () ->
+                CatalogUtil.loadFileIO(TestFileIONotImpl.class.getName(), Maps.newHashMap(), null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot initialize FileIO")
+        .hasMessageContaining("does not implement FileIO");
   }
 
   @Test
@@ -165,23 +180,58 @@ public class TestCatalogUtil {
     options.put(CatalogUtil.ICEBERG_CATALOG_TYPE, "hive");
     Configuration hadoopConf = new Configuration();
     String name = "custom";
+    Assertions.assertThatThrownBy(() -> CatalogUtil.buildIcebergCatalog(name, options, hadoopConf))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage(
+            "Cannot create catalog custom, both type and catalog-impl are set: type=hive, catalog-impl=CustomCatalog");
+  }
 
-    AssertHelpers.assertThrows("Should complain about both configs being set", IllegalArgumentException.class,
-        "both type and catalog-impl are set", () -> CatalogUtil.buildIcebergCatalog(name, options, hadoopConf));
+  @Test
+  public void loadCustomMetricsReporter_noArg() {
+    Map<String, String> properties = Maps.newHashMap();
+    properties.put("key", "val");
+    properties.put(
+        CatalogProperties.METRICS_REPORTER_IMPL, TestMetricsReporterDefault.class.getName());
+
+    MetricsReporter metricsReporter = CatalogUtil.loadMetricsReporter(properties);
+    Assertions.assertThat(metricsReporter).isInstanceOf(TestMetricsReporterDefault.class);
+  }
+
+  @Test
+  public void loadCustomMetricsReporter_badArg() {
+    Assertions.assertThatThrownBy(
+            () ->
+                CatalogUtil.loadMetricsReporter(
+                    ImmutableMap.of(
+                        CatalogProperties.METRICS_REPORTER_IMPL,
+                        TestMetricsReporterBadArg.class.getName())))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("missing no-arg constructor");
+  }
+
+  @Test
+  public void loadCustomMetricsReporter_badClass() {
+    Assertions.assertThatThrownBy(
+            () ->
+                CatalogUtil.loadMetricsReporter(
+                    ImmutableMap.of(
+                        CatalogProperties.METRICS_REPORTER_IMPL,
+                        TestFileIONotImpl.class.getName())))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("does not implement MetricsReporter");
   }
 
   public static class TestCatalog extends BaseMetastoreCatalog {
 
     private String catalogName;
-    private Map<String, String> flinkOptions;
+    private Map<String, String> catalogProperties;
 
-    public TestCatalog() {
-    }
+    public TestCatalog() {}
 
     @Override
     public void initialize(String name, Map<String, String> properties) {
       this.catalogName = name;
-      this.flinkOptions = properties;
+      this.catalogProperties = properties;
     }
 
     @Override
@@ -205,24 +255,21 @@ public class TestCatalogUtil {
     }
 
     @Override
-    public void renameTable(TableIdentifier from, TableIdentifier to) {
-
-    }
+    public void renameTable(TableIdentifier from, TableIdentifier to) {}
   }
 
   public static class TestCatalogConfigurable extends BaseMetastoreCatalog implements Configurable {
 
     private String catalogName;
-    private Map<String, String> flinkOptions;
+    private Map<String, String> catalogProperties;
     private Configuration configuration;
 
-    public TestCatalogConfigurable() {
-    }
+    public TestCatalogConfigurable() {}
 
     @Override
     public void initialize(String name, Map<String, String> properties) {
       this.catalogName = name;
-      this.flinkOptions = properties;
+      this.catalogProperties = properties;
     }
 
     @Override
@@ -256,15 +303,12 @@ public class TestCatalogUtil {
     }
 
     @Override
-    public void renameTable(TableIdentifier from, TableIdentifier to) {
-
-    }
+    public void renameTable(TableIdentifier from, TableIdentifier to) {}
   }
 
   public static class TestCatalogBadConstructor extends BaseMetastoreCatalog {
 
-    public TestCatalogBadConstructor(String arg) {
-    }
+    public TestCatalogBadConstructor(String arg) {}
 
     @Override
     protected TableOperations newTableOps(TableIdentifier tableIdentifier) {
@@ -287,26 +331,21 @@ public class TestCatalogUtil {
     }
 
     @Override
-    public void renameTable(TableIdentifier from, TableIdentifier to) {
-
-    }
+    public void renameTable(TableIdentifier from, TableIdentifier to) {}
 
     @Override
-    public void initialize(String name, Map<String, String> properties) {
-    }
+    public void initialize(String name, Map<String, String> properties) {}
   }
 
   public static class TestCatalogNoInterface {
-    public TestCatalogNoInterface() {
-    }
+    public TestCatalogNoInterface() {}
   }
 
   public static class TestFileIOConfigurable implements FileIO, Configurable {
 
     private Configuration configuration;
 
-    public TestFileIOConfigurable() {
-    }
+    public TestFileIOConfigurable() {}
 
     @Override
     public void setConf(Configuration conf) {
@@ -329,9 +368,7 @@ public class TestCatalogUtil {
     }
 
     @Override
-    public void deleteFile(String path) {
-
-    }
+    public void deleteFile(String path) {}
 
     public Configuration getConfiguration() {
       return configuration;
@@ -342,8 +379,7 @@ public class TestCatalogUtil {
 
     private Map<String, String> map;
 
-    public TestFileIONoArg() {
-    }
+    public TestFileIONoArg() {}
 
     @Override
     public InputFile newInputFile(String path) {
@@ -356,9 +392,7 @@ public class TestCatalogUtil {
     }
 
     @Override
-    public void deleteFile(String path) {
-
-    }
+    public void deleteFile(String path) {}
 
     public Map<String, String> getMap() {
       return map;
@@ -389,9 +423,7 @@ public class TestCatalogUtil {
     }
 
     @Override
-    public void deleteFile(String path) {
-
-    }
+    public void deleteFile(String path) {}
 
     public String getArg() {
       return arg;
@@ -399,7 +431,23 @@ public class TestCatalogUtil {
   }
 
   public static class TestFileIONotImpl {
-    public TestFileIONotImpl() {
+    public TestFileIONotImpl() {}
+  }
+
+  public static class TestMetricsReporterBadArg implements MetricsReporter {
+    private final String arg;
+
+    public TestMetricsReporterBadArg(String arg) {
+      this.arg = arg;
     }
+
+    @Override
+    public void report(MetricsReport report) {}
+  }
+
+  public static class TestMetricsReporterDefault implements MetricsReporter {
+
+    @Override
+    public void report(MetricsReport report) {}
   }
 }

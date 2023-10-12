@@ -31,11 +31,16 @@ import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.catalyst.expressions.PredicateHelper
 import org.apache.spark.sql.catalyst.plans.logical.AddPartitionField
 import org.apache.spark.sql.catalyst.plans.logical.Call
+import org.apache.spark.sql.catalyst.plans.logical.CreateOrReplaceBranch
+import org.apache.spark.sql.catalyst.plans.logical.CreateOrReplaceTag
 import org.apache.spark.sql.catalyst.plans.logical.DeleteFromIcebergTable
+import org.apache.spark.sql.catalyst.plans.logical.DropBranch
 import org.apache.spark.sql.catalyst.plans.logical.DropIdentifierFields
 import org.apache.spark.sql.catalyst.plans.logical.DropPartitionField
+import org.apache.spark.sql.catalyst.plans.logical.DropTag
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.plans.logical.MergeRows
+import org.apache.spark.sql.catalyst.plans.logical.NoStatsUnaryNode
 import org.apache.spark.sql.catalyst.plans.logical.ReplaceData
 import org.apache.spark.sql.catalyst.plans.logical.ReplacePartitionField
 import org.apache.spark.sql.catalyst.plans.logical.SetIdentifierFields
@@ -46,7 +51,7 @@ import org.apache.spark.sql.connector.catalog.TableCatalog
 import org.apache.spark.sql.errors.QueryCompilationErrors
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.DataSourceStrategy
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 case class ExtendedDataSourceV2Strategy(spark: SparkSession) extends Strategy with PredicateHelper {
 
@@ -65,6 +70,20 @@ case class ExtendedDataSourceV2Strategy(spark: SparkSession) extends Strategy wi
 
     case ReplacePartitionField(IcebergCatalogAndIdentifier(catalog, ident), transformFrom, transformTo, name) =>
       ReplacePartitionFieldExec(catalog, ident, transformFrom, transformTo, name) :: Nil
+
+    case CreateOrReplaceBranch(
+        IcebergCatalogAndIdentifier(catalog, ident), branch, branchOptions, create, replace, ifNotExists) =>
+      CreateOrReplaceBranchExec(catalog, ident, branch, branchOptions, create, replace, ifNotExists) :: Nil
+
+    case CreateOrReplaceTag(
+        IcebergCatalogAndIdentifier(catalog, ident), tag, tagOptions, create, replace, ifNotExists) =>
+      CreateOrReplaceTagExec(catalog, ident, tag, tagOptions, create, replace, ifNotExists) :: Nil
+
+    case DropBranch(IcebergCatalogAndIdentifier(catalog, ident), branch, ifExists) =>
+      DropBranchExec(catalog, ident, branch, ifExists) :: Nil
+
+    case DropTag(IcebergCatalogAndIdentifier(catalog, ident), tag, ifExists) =>
+      DropTagExec(catalog, ident, tag, ifExists) :: Nil
 
     case SetIdentifierFields(IcebergCatalogAndIdentifier(catalog, ident), fields) =>
       SetIdentifierFieldsExec(catalog, ident, fields) :: Nil
@@ -105,6 +124,9 @@ case class ExtendedDataSourceV2Strategy(spark: SparkSession) extends Strategy wi
         filter
       }.toArray
       DeleteFromTableExec(r.table.asDeletable, filters, refreshCache(r)) :: Nil
+
+    case NoStatsUnaryNode(child) =>
+      planLater(child) :: Nil
 
     case _ => Nil
   }

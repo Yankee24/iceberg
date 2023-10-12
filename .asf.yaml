@@ -33,21 +33,20 @@ github:
     projects: true
   collaborators:  # Note: the number of collaborators is limited to 10
     - chenjunjiedada
-    - kbendick
     - jun-he
     - marton-bod
-    - nastra
     - samarthjain
-    - szehon-ho
     - findepi
     - SreeramGarlapati
     - samredai
+    - gaborkaszab
+    - bitsondatadev
+    - ajantha-bhat
+  ghp_branch: gh-pages
+  ghp_path: ~
 
 notifications:
     commits:      commits@iceberg.apache.org
     issues:       issues@iceberg.apache.org
     pullrequests: issues@iceberg.apache.org
     jira_options: link label link label
-
-publish:
-    whoami:  asf-site

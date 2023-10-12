@@ -16,11 +16,11 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.parquet;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -28,18 +28,16 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.Metrics;
 import org.apache.iceberg.MetricsConfig;
 import org.apache.iceberg.Schema;
-import org.apache.iceberg.common.DynConstructors;
-import org.apache.iceberg.common.DynMethods;
-import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.FileAppender;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.apache.parquet.bytes.ByteBufferAllocator;
 import org.apache.parquet.column.ColumnWriteStore;
 import org.apache.parquet.column.ParquetProperties;
-import org.apache.parquet.column.page.PageWriteStore;
+import org.apache.parquet.crypto.FileEncryptionProperties;
+import org.apache.parquet.crypto.InternalFileEncryptor;
 import org.apache.parquet.hadoop.CodecFactory;
+import org.apache.parquet.hadoop.ColumnChunkPageWriteStore;
 import org.apache.parquet.hadoop.ParquetFileWriter;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.schema.MessageType;
@@ -47,20 +45,6 @@ import org.apache.parquet.schema.MessageType;
 class ParquetWriter<T> implements FileAppender<T>, Closeable {
 
   private static final Metrics EMPTY_METRICS = new Metrics(0L, null, null, null, null);
-
-  private static final DynConstructors.Ctor<PageWriteStore> pageStoreCtorParquet = DynConstructors
-      .builder(PageWriteStore.class)
-      .hiddenImpl("org.apache.parquet.hadoop.ColumnChunkPageWriteStore",
-          CodecFactory.BytesCompressor.class,
-          MessageType.class,
-          ByteBufferAllocator.class,
-          int.class)
-      .build();
-
-  private static final DynMethods.UnboundMethod flushToWriter = DynMethods
-      .builder("flushToFileWriter")
-      .hiddenImpl("org.apache.parquet.hadoop.ColumnChunkPageWriteStore", ParquetFileWriter.class)
-      .build();
 
   private final long targetRowGroupSize;
   private final Map<String, String> metadata;
@@ -73,36 +57,48 @@ class ParquetWriter<T> implements FileAppender<T>, Closeable {
   private final ParquetFileWriter.Mode writeMode;
   private final OutputFile output;
   private final Configuration conf;
+  private final InternalFileEncryptor fileEncryptor;
 
-  private DynMethods.BoundMethod flushPageStoreToWriter;
+  private ColumnChunkPageWriteStore pageStore = null;
   private ColumnWriteStore writeStore;
   private long recordCount = 0;
   private long nextCheckRecordCount = 10;
   private boolean closed;
   private ParquetFileWriter writer;
+  private int rowGroupOrdinal;
 
   private static final String COLUMN_INDEX_TRUNCATE_LENGTH = "parquet.columnindex.truncate.length";
   private static final int DEFAULT_COLUMN_INDEX_TRUNCATE_LENGTH = 64;
 
   @SuppressWarnings("unchecked")
-  ParquetWriter(Configuration conf, OutputFile output, Schema schema, long rowGroupSize,
-                Map<String, String> metadata,
-                Function<MessageType, ParquetValueWriter<?>> createWriterFunc,
-                CompressionCodecName codec,
-                ParquetProperties properties,
-                MetricsConfig metricsConfig,
-                ParquetFileWriter.Mode writeMode) {
+  ParquetWriter(
+      Configuration conf,
+      OutputFile output,
+      Schema schema,
+      long rowGroupSize,
+      Map<String, String> metadata,
+      Function<MessageType, ParquetValueWriter<?>> createWriterFunc,
+      CompressionCodecName codec,
+      ParquetProperties properties,
+      MetricsConfig metricsConfig,
+      ParquetFileWriter.Mode writeMode,
+      FileEncryptionProperties encryptionProperties) {
     this.targetRowGroupSize = rowGroupSize;
     this.props = properties;
     this.metadata = ImmutableMap.copyOf(metadata);
-    this.compressor = new CodecFactory(conf, props.getPageSizeThreshold()).getCompressor(codec);
+    this.compressor =
+        new ParquetCodecFactory(conf, props.getPageSizeThreshold()).getCompressor(codec);
     this.parquetSchema = ParquetSchemaUtil.convert(schema, "table");
     this.model = (ParquetValueWriter<T>) createWriterFunc.apply(parquetSchema);
     this.metricsConfig = metricsConfig;
-    this.columnIndexTruncateLength = conf.getInt(COLUMN_INDEX_TRUNCATE_LENGTH, DEFAULT_COLUMN_INDEX_TRUNCATE_LENGTH);
+    this.columnIndexTruncateLength =
+        conf.getInt(COLUMN_INDEX_TRUNCATE_LENGTH, DEFAULT_COLUMN_INDEX_TRUNCATE_LENGTH);
     this.writeMode = writeMode;
     this.output = output;
     this.conf = conf;
+    this.rowGroupOrdinal = 0;
+    this.fileEncryptor =
+        (encryptionProperties == null ? null : new InternalFileEncryptor(encryptionProperties));
 
     startRowGroup();
   }
@@ -110,16 +106,25 @@ class ParquetWriter<T> implements FileAppender<T>, Closeable {
   private void ensureWriterInitialized() {
     if (writer == null) {
       try {
-        this.writer = new ParquetFileWriter(
-            ParquetIO.file(output, conf), parquetSchema, writeMode, targetRowGroupSize, 0);
+        this.writer =
+            new ParquetFileWriter(
+                ParquetIO.file(output, conf),
+                parquetSchema,
+                writeMode,
+                targetRowGroupSize,
+                0,
+                columnIndexTruncateLength,
+                ParquetProperties.DEFAULT_STATISTICS_TRUNCATE_LENGTH,
+                ParquetProperties.DEFAULT_PAGE_WRITE_CHECKSUM_ENABLED,
+                fileEncryptor);
       } catch (IOException e) {
-        throw new RuntimeIOException(e, "Failed to create Parquet file");
+        throw new UncheckedIOException("Failed to create Parquet file", e);
       }
 
       try {
         writer.start();
       } catch (IOException e) {
-        throw new RuntimeIOException(e, "Failed to start Parquet file writer");
+        throw new UncheckedIOException("Failed to start Parquet file writer", e);
       }
     }
   }
@@ -143,12 +148,12 @@ class ParquetWriter<T> implements FileAppender<T>, Closeable {
 
   /**
    * Returns the approximate length of the output file produced by this writer.
-   * <p>
-   * Prior to calling {@link ParquetWriter#close}, the result is approximate. After calling close, the length is
-   * exact.
    *
-   * @return the approximate length of the output file produced by this writer or the exact length if this writer is
-   * closed.
+   * <p>Prior to calling {@link ParquetWriter#close}, the result is approximate. After calling
+   * close, the length is exact.
+   *
+   * @return the approximate length of the output file produced by this writer or the exact length
+   *     if this writer is closed.
    */
   @Override
   public long length() {
@@ -160,14 +165,15 @@ class ParquetWriter<T> implements FileAppender<T>, Closeable {
       }
 
       if (!closed && recordCount > 0) {
-        // recordCount > 0 when there are records in the write store that have not been flushed to the Parquet file
+        // recordCount > 0 when there are records in the write store that have not been flushed to
+        // the Parquet file
         length += writeStore.getBufferedSize();
       }
 
       return length;
 
     } catch (IOException e) {
-      throw new RuntimeIOException(e, "Failed to get file length");
+      throw new UncheckedIOException("Failed to get file length", e);
     }
   }
 
@@ -189,7 +195,11 @@ class ParquetWriter<T> implements FileAppender<T>, Closeable {
       } else {
         long remainingSpace = targetRowGroupSize - bufferedSize;
         long remainingRecords = (long) (remainingSpace / avgRecordSize);
-        this.nextCheckRecordCount = recordCount + Math.min(Math.max(remainingRecords / 2, 100), 10000);
+        this.nextCheckRecordCount =
+            recordCount
+                + Math.min(
+                    Math.max(remainingRecords / 2, props.getMinRowCountForPageSizeCheck()),
+                    props.getMaxRowCountForPageSizeCheck());
       }
     }
   }
@@ -200,28 +210,39 @@ class ParquetWriter<T> implements FileAppender<T>, Closeable {
         ensureWriterInitialized();
         writer.startBlock(recordCount);
         writeStore.flush();
-        flushPageStoreToWriter.invoke(writer);
+        pageStore.flushToFileWriter(writer);
         writer.endBlock();
         if (!finished) {
+          writeStore.close();
           startRowGroup();
         }
       }
     } catch (IOException e) {
-      throw new RuntimeIOException(e, "Failed to flush row group");
+      throw new UncheckedIOException("Failed to flush row group", e);
     }
   }
 
   private void startRowGroup() {
     Preconditions.checkState(!closed, "Writer is closed");
 
-    this.nextCheckRecordCount = Math.min(Math.max(recordCount / 2, 100), 10000);
+    this.nextCheckRecordCount =
+        Math.min(
+            Math.max(recordCount / 2, props.getMinRowCountForPageSizeCheck()),
+            props.getMaxRowCountForPageSizeCheck());
     this.recordCount = 0;
 
-    PageWriteStore pageStore = pageStoreCtorParquet.newInstance(
-        compressor, parquetSchema, props.getAllocator(), this.columnIndexTruncateLength);
+    this.pageStore =
+        new ColumnChunkPageWriteStore(
+            compressor,
+            parquetSchema,
+            props.getAllocator(),
+            this.columnIndexTruncateLength,
+            ParquetProperties.DEFAULT_PAGE_WRITE_CHECKSUM_ENABLED,
+            fileEncryptor,
+            rowGroupOrdinal);
+    this.rowGroupOrdinal++;
 
-    this.flushPageStoreToWriter = flushToWriter.bind(pageStore);
-    this.writeStore = props.newColumnWriteStore(parquetSchema, pageStore);
+    this.writeStore = props.newColumnWriteStore(parquetSchema, pageStore, pageStore);
 
     model.setColumnStore(writeStore);
   }
@@ -234,6 +255,9 @@ class ParquetWriter<T> implements FileAppender<T>, Closeable {
       writeStore.close();
       if (writer != null) {
         writer.end(metadata);
+      }
+      if (compressor != null) {
+        compressor.release();
       }
     }
   }

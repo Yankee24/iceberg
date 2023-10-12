@@ -16,11 +16,39 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.parquet;
+
+import static org.apache.iceberg.TableProperties.DELETE_PARQUET_COMPRESSION;
+import static org.apache.iceberg.TableProperties.DELETE_PARQUET_COMPRESSION_LEVEL;
+import static org.apache.iceberg.TableProperties.DELETE_PARQUET_DICT_SIZE_BYTES;
+import static org.apache.iceberg.TableProperties.DELETE_PARQUET_PAGE_ROW_LIMIT;
+import static org.apache.iceberg.TableProperties.DELETE_PARQUET_PAGE_SIZE_BYTES;
+import static org.apache.iceberg.TableProperties.DELETE_PARQUET_ROW_GROUP_CHECK_MAX_RECORD_COUNT;
+import static org.apache.iceberg.TableProperties.DELETE_PARQUET_ROW_GROUP_CHECK_MIN_RECORD_COUNT;
+import static org.apache.iceberg.TableProperties.DELETE_PARQUET_ROW_GROUP_SIZE_BYTES;
+import static org.apache.iceberg.TableProperties.PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX;
+import static org.apache.iceberg.TableProperties.PARQUET_BLOOM_FILTER_MAX_BYTES;
+import static org.apache.iceberg.TableProperties.PARQUET_BLOOM_FILTER_MAX_BYTES_DEFAULT;
+import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION;
+import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION_DEFAULT;
+import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION_LEVEL;
+import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION_LEVEL_DEFAULT;
+import static org.apache.iceberg.TableProperties.PARQUET_DICT_SIZE_BYTES;
+import static org.apache.iceberg.TableProperties.PARQUET_DICT_SIZE_BYTES_DEFAULT;
+import static org.apache.iceberg.TableProperties.PARQUET_PAGE_ROW_LIMIT;
+import static org.apache.iceberg.TableProperties.PARQUET_PAGE_ROW_LIMIT_DEFAULT;
+import static org.apache.iceberg.TableProperties.PARQUET_PAGE_SIZE_BYTES;
+import static org.apache.iceberg.TableProperties.PARQUET_PAGE_SIZE_BYTES_DEFAULT;
+import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_CHECK_MAX_RECORD_COUNT;
+import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_CHECK_MAX_RECORD_COUNT_DEFAULT;
+import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_CHECK_MIN_RECORD_COUNT;
+import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_CHECK_MIN_RECORD_COUNT_DEFAULT;
+import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES;
+import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES_DEFAULT;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
@@ -59,9 +87,11 @@ import org.apache.iceberg.parquet.ParquetValueWriters.PositionDeleteStructWriter
 import org.apache.iceberg.parquet.ParquetValueWriters.StructWriter;
 import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.util.ArrayUtil;
+import org.apache.iceberg.util.ByteBuffers;
 import org.apache.iceberg.util.PropertyUtil;
 import org.apache.parquet.HadoopReadOptions;
 import org.apache.parquet.ParquetReadOptions;
@@ -69,8 +99,11 @@ import org.apache.parquet.avro.AvroReadSupport;
 import org.apache.parquet.avro.AvroWriteSupport;
 import org.apache.parquet.column.ParquetProperties;
 import org.apache.parquet.column.ParquetProperties.WriterVersion;
+import org.apache.parquet.crypto.FileDecryptionProperties;
+import org.apache.parquet.crypto.FileEncryptionProperties;
 import org.apache.parquet.hadoop.ParquetFileReader;
 import org.apache.parquet.hadoop.ParquetFileWriter;
+import org.apache.parquet.hadoop.ParquetOutputFormat;
 import org.apache.parquet.hadoop.ParquetReader;
 import org.apache.parquet.hadoop.ParquetWriter;
 import org.apache.parquet.hadoop.api.ReadSupport;
@@ -78,28 +111,15 @@ import org.apache.parquet.hadoop.api.WriteSupport;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import org.apache.parquet.schema.MessageType;
 
-import static org.apache.iceberg.TableProperties.DELETE_PARQUET_COMPRESSION;
-import static org.apache.iceberg.TableProperties.DELETE_PARQUET_COMPRESSION_LEVEL;
-import static org.apache.iceberg.TableProperties.DELETE_PARQUET_DICT_SIZE_BYTES;
-import static org.apache.iceberg.TableProperties.DELETE_PARQUET_PAGE_SIZE_BYTES;
-import static org.apache.iceberg.TableProperties.DELETE_PARQUET_ROW_GROUP_SIZE_BYTES;
-import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION;
-import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION_DEFAULT;
-import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION_LEVEL;
-import static org.apache.iceberg.TableProperties.PARQUET_COMPRESSION_LEVEL_DEFAULT;
-import static org.apache.iceberg.TableProperties.PARQUET_DICT_SIZE_BYTES;
-import static org.apache.iceberg.TableProperties.PARQUET_DICT_SIZE_BYTES_DEFAULT;
-import static org.apache.iceberg.TableProperties.PARQUET_PAGE_SIZE_BYTES;
-import static org.apache.iceberg.TableProperties.PARQUET_PAGE_SIZE_BYTES_DEFAULT;
-import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES;
-import static org.apache.iceberg.TableProperties.PARQUET_ROW_GROUP_SIZE_BYTES_DEFAULT;
-
 public class Parquet {
-  private Parquet() {
-  }
+  private Parquet() {}
 
-  private static final Collection<String> READ_PROPERTIES_TO_REMOVE = Sets.newHashSet(
-      "parquet.read.filter", "parquet.private.read.filter.predicate", "parquet.read.support.class");
+  private static final Collection<String> READ_PROPERTIES_TO_REMOVE =
+      Sets.newHashSet(
+          "parquet.read.filter",
+          "parquet.private.read.filter.predicate",
+          "parquet.read.support.class",
+          "parquet.crypto.factory.class");
 
   public static WriteBuilder write(OutputFile file) {
     return new WriteBuilder(file);
@@ -107,6 +127,7 @@ public class Parquet {
 
   public static class WriteBuilder {
     private final OutputFile file;
+    private final Configuration conf;
     private final Map<String, String> metadata = Maps.newLinkedHashMap();
     private final Map<String, String> config = Maps.newLinkedHashMap();
     private Schema schema = null;
@@ -117,9 +138,16 @@ public class Parquet {
     private ParquetFileWriter.Mode writeMode = ParquetFileWriter.Mode.CREATE;
     private WriterVersion writerVersion = WriterVersion.PARQUET_1_0;
     private Function<Map<String, String>, Context> createContextFunc = Context::dataContext;
+    private ByteBuffer fileEncryptionKey = null;
+    private ByteBuffer fileAADPrefix = null;
 
     private WriteBuilder(OutputFile file) {
       this.file = file;
+      if (file instanceof HadoopOutputFile) {
+        this.conf = new Configuration(((HadoopOutputFile) file).getConf());
+      } else {
+        this.conf = new Configuration();
+      }
     }
 
     public WriteBuilder forTable(Table table) {
@@ -159,7 +187,8 @@ public class Parquet {
       return this;
     }
 
-    public WriteBuilder createWriterFunc(Function<MessageType, ParquetValueWriter<?>> newCreateWriterFunc) {
+    public WriteBuilder createWriterFunc(
+        Function<MessageType, ParquetValueWriter<?>> newCreateWriterFunc) {
       this.createWriterFunc = newCreateWriterFunc;
       return this;
     }
@@ -180,6 +209,16 @@ public class Parquet {
 
     public WriteBuilder writerVersion(WriterVersion version) {
       this.writerVersion = version;
+      return this;
+    }
+
+    public WriteBuilder withFileEncryptionKey(ByteBuffer encryptionKey) {
+      this.fileEncryptionKey = encryptionKey;
+      return this;
+    }
+
+    public WriteBuilder withAADPrefix(ByteBuffer aadPrefix) {
+      this.fileAADPrefix = aadPrefix;
       return this;
     }
 
@@ -205,7 +244,8 @@ public class Parquet {
     }
 
     // supposed to always be a private method used strictly by data and delete write builders
-    private WriteBuilder createContextFunc(Function<Map<String, String>, Context> newCreateContextFunc) {
+    private WriteBuilder createContextFunc(
+        Function<Map<String, String>, Context> newCreateContextFunc) {
       this.createContextFunc = newCreateContextFunc;
       return this;
     }
@@ -222,9 +262,15 @@ public class Parquet {
 
       int rowGroupSize = context.rowGroupSize();
       int pageSize = context.pageSize();
+      int pageRowLimit = context.pageRowLimit();
       int dictionaryPageSize = context.dictionaryPageSize();
       String compressionLevel = context.compressionLevel();
       CompressionCodecName codec = context.codec();
+      int rowGroupCheckMinRecordCount = context.rowGroupCheckMinRecordCount();
+      int rowGroupCheckMaxRecordCount = context.rowGroupCheckMaxRecordCount();
+      int bloomFilterMaxBytes = context.bloomFilterMaxBytes();
+      Map<String, String> columnBloomFilterEnabled = context.columnBloomFilterEnabled();
+      boolean dictionaryEnabled = context.dictionaryEnabled();
 
       if (compressionLevel != null) {
         switch (codec) {
@@ -235,7 +281,9 @@ public class Parquet {
             config.put("compression.brotli.quality", compressionLevel);
             break;
           case ZSTD:
+            // keep "io.compression.codec.zstd.level" for backwards compatibility
             config.put("io.compression.codec.zstd.level", compressionLevel);
+            config.put("parquet.compression.codec.zstd.level", compressionLevel);
             break;
           default:
             // compression level is not supported; ignore it
@@ -245,99 +293,261 @@ public class Parquet {
       set("parquet.avro.write-old-list-structure", "false");
       MessageType type = ParquetSchemaUtil.convert(schema, name);
 
+      FileEncryptionProperties fileEncryptionProperties = null;
+      if (fileEncryptionKey != null) {
+        byte[] encryptionKeyArray = ByteBuffers.toByteArray(fileEncryptionKey);
+        byte[] aadPrefixArray = ByteBuffers.toByteArray(fileAADPrefix);
+
+        fileEncryptionProperties =
+            FileEncryptionProperties.builder(encryptionKeyArray)
+                .withAADPrefix(aadPrefixArray)
+                .withoutAADPrefixStorage()
+                .build();
+      } else {
+        Preconditions.checkState(fileAADPrefix == null, "AAD prefix set with null encryption key");
+      }
+
       if (createWriterFunc != null) {
-        Preconditions.checkArgument(writeSupport == null,
-            "Cannot write with both write support and Parquet value writer");
-        Configuration conf;
-        if (file instanceof HadoopOutputFile) {
-          conf = ((HadoopOutputFile) file).getConf();
-        } else {
-          conf = new Configuration();
-        }
+        Preconditions.checkArgument(
+            writeSupport == null, "Cannot write with both write support and Parquet value writer");
 
         for (Map.Entry<String, String> entry : config.entrySet()) {
           conf.set(entry.getKey(), entry.getValue());
         }
 
-        ParquetProperties parquetProperties = ParquetProperties.builder()
-            .withWriterVersion(writerVersion)
-            .withPageSize(pageSize)
-            .withDictionaryPageSize(dictionaryPageSize)
-            .build();
+        ParquetProperties.Builder propsBuilder =
+            ParquetProperties.builder()
+                .withWriterVersion(writerVersion)
+                .withPageSize(pageSize)
+                .withPageRowCountLimit(pageRowLimit)
+                .withDictionaryEncoding(dictionaryEnabled)
+                .withDictionaryPageSize(dictionaryPageSize)
+                .withMinRowCountForPageSizeCheck(rowGroupCheckMinRecordCount)
+                .withMaxRowCountForPageSizeCheck(rowGroupCheckMaxRecordCount)
+                .withMaxBloomFilterBytes(bloomFilterMaxBytes);
+
+        for (Map.Entry<String, String> entry : columnBloomFilterEnabled.entrySet()) {
+          String colPath = entry.getKey();
+          String bloomEnabled = entry.getValue();
+          propsBuilder.withBloomFilterEnabled(colPath, Boolean.valueOf(bloomEnabled));
+        }
+
+        ParquetProperties parquetProperties = propsBuilder.build();
 
         return new org.apache.iceberg.parquet.ParquetWriter<>(
-            conf, file, schema, rowGroupSize, metadata, createWriterFunc, codec,
-            parquetProperties, metricsConfig, writeMode);
+            conf,
+            file,
+            schema,
+            rowGroupSize,
+            metadata,
+            createWriterFunc,
+            codec,
+            parquetProperties,
+            metricsConfig,
+            writeMode,
+            fileEncryptionProperties);
       } else {
-        return new ParquetWriteAdapter<>(new ParquetWriteBuilder<D>(ParquetIO.file(file))
-            .withWriterVersion(writerVersion)
-            .setType(type)
-            .setConfig(config)
-            .setKeyValueMetadata(metadata)
-            .setWriteSupport(getWriteSupport(type))
-            .withCompressionCodec(codec)
-            .withWriteMode(writeMode)
-            .withRowGroupSize(rowGroupSize)
-            .withPageSize(pageSize)
-            .withDictionaryPageSize(dictionaryPageSize)
-            .build(),
-            metricsConfig);
+        ParquetWriteBuilder<D> parquetWriteBuilder =
+            new ParquetWriteBuilder<D>(ParquetIO.file(file))
+                .withWriterVersion(writerVersion)
+                .setType(type)
+                .setConfig(config)
+                .setKeyValueMetadata(metadata)
+                .setWriteSupport(getWriteSupport(type))
+                .withCompressionCodec(codec)
+                .withWriteMode(writeMode)
+                .withRowGroupSize(rowGroupSize)
+                .withPageSize(pageSize)
+                .withPageRowCountLimit(pageRowLimit)
+                .withDictionaryEncoding(dictionaryEnabled)
+                .withDictionaryPageSize(dictionaryPageSize)
+                .withEncryption(fileEncryptionProperties);
+
+        for (Map.Entry<String, String> entry : columnBloomFilterEnabled.entrySet()) {
+          String colPath = entry.getKey();
+          String bloomEnabled = entry.getValue();
+          parquetWriteBuilder.withBloomFilterEnabled(colPath, Boolean.valueOf(bloomEnabled));
+        }
+
+        return new ParquetWriteAdapter<>(parquetWriteBuilder.build(), metricsConfig);
       }
     }
 
     private static class Context {
       private final int rowGroupSize;
       private final int pageSize;
+      private final int pageRowLimit;
       private final int dictionaryPageSize;
       private final CompressionCodecName codec;
       private final String compressionLevel;
+      private final int rowGroupCheckMinRecordCount;
+      private final int rowGroupCheckMaxRecordCount;
+      private final int bloomFilterMaxBytes;
+      private final Map<String, String> columnBloomFilterEnabled;
+      private final boolean dictionaryEnabled;
 
-      private Context(int rowGroupSize, int pageSize, int dictionaryPageSize,
-                      CompressionCodecName codec, String compressionLevel) {
+      private Context(
+          int rowGroupSize,
+          int pageSize,
+          int pageRowLimit,
+          int dictionaryPageSize,
+          CompressionCodecName codec,
+          String compressionLevel,
+          int rowGroupCheckMinRecordCount,
+          int rowGroupCheckMaxRecordCount,
+          int bloomFilterMaxBytes,
+          Map<String, String> columnBloomFilterEnabled,
+          boolean dictionaryEnabled) {
         this.rowGroupSize = rowGroupSize;
         this.pageSize = pageSize;
+        this.pageRowLimit = pageRowLimit;
         this.dictionaryPageSize = dictionaryPageSize;
         this.codec = codec;
         this.compressionLevel = compressionLevel;
+        this.rowGroupCheckMinRecordCount = rowGroupCheckMinRecordCount;
+        this.rowGroupCheckMaxRecordCount = rowGroupCheckMaxRecordCount;
+        this.bloomFilterMaxBytes = bloomFilterMaxBytes;
+        this.columnBloomFilterEnabled = columnBloomFilterEnabled;
+        this.dictionaryEnabled = dictionaryEnabled;
       }
 
       static Context dataContext(Map<String, String> config) {
-        int rowGroupSize = Integer.parseInt(config.getOrDefault(
-            PARQUET_ROW_GROUP_SIZE_BYTES, PARQUET_ROW_GROUP_SIZE_BYTES_DEFAULT));
+        int rowGroupSize =
+            PropertyUtil.propertyAsInt(
+                config, PARQUET_ROW_GROUP_SIZE_BYTES, PARQUET_ROW_GROUP_SIZE_BYTES_DEFAULT);
+        Preconditions.checkArgument(rowGroupSize > 0, "Row group size must be > 0");
 
-        int pageSize = Integer.parseInt(config.getOrDefault(
-            PARQUET_PAGE_SIZE_BYTES, PARQUET_PAGE_SIZE_BYTES_DEFAULT));
+        int pageSize =
+            PropertyUtil.propertyAsInt(
+                config, PARQUET_PAGE_SIZE_BYTES, PARQUET_PAGE_SIZE_BYTES_DEFAULT);
+        Preconditions.checkArgument(pageSize > 0, "Page size must be > 0");
 
-        int dictionaryPageSize = Integer.parseInt(config.getOrDefault(
-            PARQUET_DICT_SIZE_BYTES, PARQUET_DICT_SIZE_BYTES_DEFAULT));
+        int pageRowLimit =
+            PropertyUtil.propertyAsInt(
+                config, PARQUET_PAGE_ROW_LIMIT, PARQUET_PAGE_ROW_LIMIT_DEFAULT);
+        Preconditions.checkArgument(pageRowLimit > 0, "Page row count limit must be > 0");
 
-        String codecAsString = config.getOrDefault(PARQUET_COMPRESSION, PARQUET_COMPRESSION_DEFAULT);
+        int dictionaryPageSize =
+            PropertyUtil.propertyAsInt(
+                config, PARQUET_DICT_SIZE_BYTES, PARQUET_DICT_SIZE_BYTES_DEFAULT);
+        Preconditions.checkArgument(dictionaryPageSize > 0, "Dictionary page size must be > 0");
+
+        String codecAsString =
+            config.getOrDefault(PARQUET_COMPRESSION, PARQUET_COMPRESSION_DEFAULT);
         CompressionCodecName codec = toCodec(codecAsString);
 
-        String compressionLevel = config.getOrDefault(PARQUET_COMPRESSION_LEVEL, PARQUET_COMPRESSION_LEVEL_DEFAULT);
+        String compressionLevel =
+            config.getOrDefault(PARQUET_COMPRESSION_LEVEL, PARQUET_COMPRESSION_LEVEL_DEFAULT);
 
-        return new Context(rowGroupSize, pageSize, dictionaryPageSize, codec, compressionLevel);
+        int rowGroupCheckMinRecordCount =
+            PropertyUtil.propertyAsInt(
+                config,
+                PARQUET_ROW_GROUP_CHECK_MIN_RECORD_COUNT,
+                PARQUET_ROW_GROUP_CHECK_MIN_RECORD_COUNT_DEFAULT);
+        Preconditions.checkArgument(
+            rowGroupCheckMinRecordCount > 0, "Row group check minimal record count must be > 0");
+
+        int rowGroupCheckMaxRecordCount =
+            PropertyUtil.propertyAsInt(
+                config,
+                PARQUET_ROW_GROUP_CHECK_MAX_RECORD_COUNT,
+                PARQUET_ROW_GROUP_CHECK_MAX_RECORD_COUNT_DEFAULT);
+        Preconditions.checkArgument(
+            rowGroupCheckMaxRecordCount > 0, "Row group check maximum record count must be > 0");
+        Preconditions.checkArgument(
+            rowGroupCheckMaxRecordCount >= rowGroupCheckMinRecordCount,
+            "Row group check maximum record count must be >= minimal record count");
+
+        int bloomFilterMaxBytes =
+            PropertyUtil.propertyAsInt(
+                config, PARQUET_BLOOM_FILTER_MAX_BYTES, PARQUET_BLOOM_FILTER_MAX_BYTES_DEFAULT);
+        Preconditions.checkArgument(bloomFilterMaxBytes > 0, "bloom Filter Max Bytes must be > 0");
+
+        Map<String, String> columnBloomFilterEnabled =
+            PropertyUtil.propertiesWithPrefix(config, PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX);
+
+        boolean dictionaryEnabled =
+            PropertyUtil.propertyAsBoolean(config, ParquetOutputFormat.ENABLE_DICTIONARY, true);
+
+        return new Context(
+            rowGroupSize,
+            pageSize,
+            pageRowLimit,
+            dictionaryPageSize,
+            codec,
+            compressionLevel,
+            rowGroupCheckMinRecordCount,
+            rowGroupCheckMaxRecordCount,
+            bloomFilterMaxBytes,
+            columnBloomFilterEnabled,
+            dictionaryEnabled);
       }
 
       static Context deleteContext(Map<String, String> config) {
         // default delete config using data config
         Context dataContext = dataContext(config);
 
-        int rowGroupSize = PropertyUtil.propertyAsInt(config,
-            DELETE_PARQUET_ROW_GROUP_SIZE_BYTES, dataContext.rowGroupSize());
+        int rowGroupSize =
+            PropertyUtil.propertyAsInt(
+                config, DELETE_PARQUET_ROW_GROUP_SIZE_BYTES, dataContext.rowGroupSize());
+        Preconditions.checkArgument(rowGroupSize > 0, "Row group size must be > 0");
 
-        int pageSize = PropertyUtil.propertyAsInt(config,
-            DELETE_PARQUET_PAGE_SIZE_BYTES, dataContext.pageSize());
+        int pageSize =
+            PropertyUtil.propertyAsInt(
+                config, DELETE_PARQUET_PAGE_SIZE_BYTES, dataContext.pageSize());
+        Preconditions.checkArgument(pageSize > 0, "Page size must be > 0");
 
-        int dictionaryPageSize = PropertyUtil.propertyAsInt(config,
-            DELETE_PARQUET_DICT_SIZE_BYTES, dataContext.dictionaryPageSize());
+        int pageRowLimit =
+            PropertyUtil.propertyAsInt(
+                config, DELETE_PARQUET_PAGE_ROW_LIMIT, dataContext.pageRowLimit());
+        Preconditions.checkArgument(pageRowLimit > 0, "Page row count limit must be > 0");
+
+        int dictionaryPageSize =
+            PropertyUtil.propertyAsInt(
+                config, DELETE_PARQUET_DICT_SIZE_BYTES, dataContext.dictionaryPageSize());
+        Preconditions.checkArgument(dictionaryPageSize > 0, "Dictionary page size must be > 0");
 
         String codecAsString = config.get(DELETE_PARQUET_COMPRESSION);
-        CompressionCodecName codec = codecAsString != null ? toCodec(codecAsString) : dataContext.codec();
+        CompressionCodecName codec =
+            codecAsString != null ? toCodec(codecAsString) : dataContext.codec();
 
-        String compressionLevel = config.getOrDefault(DELETE_PARQUET_COMPRESSION_LEVEL, dataContext.compressionLevel());
+        String compressionLevel =
+            config.getOrDefault(DELETE_PARQUET_COMPRESSION_LEVEL, dataContext.compressionLevel());
 
-        return new Context(rowGroupSize, pageSize, dictionaryPageSize, codec, compressionLevel);
+        int rowGroupCheckMinRecordCount =
+            PropertyUtil.propertyAsInt(
+                config,
+                DELETE_PARQUET_ROW_GROUP_CHECK_MIN_RECORD_COUNT,
+                dataContext.rowGroupCheckMinRecordCount());
+        Preconditions.checkArgument(
+            rowGroupCheckMinRecordCount > 0, "Row group check minimal record count must be > 0");
+
+        int rowGroupCheckMaxRecordCount =
+            PropertyUtil.propertyAsInt(
+                config,
+                DELETE_PARQUET_ROW_GROUP_CHECK_MAX_RECORD_COUNT,
+                dataContext.rowGroupCheckMaxRecordCount());
+        Preconditions.checkArgument(
+            rowGroupCheckMaxRecordCount > 0, "Row group check maximum record count must be > 0");
+        Preconditions.checkArgument(
+            rowGroupCheckMaxRecordCount >= rowGroupCheckMinRecordCount,
+            "Row group check maximum record count must be >= minimal record count");
+
+        boolean dictionaryEnabled =
+            PropertyUtil.propertyAsBoolean(config, ParquetOutputFormat.ENABLE_DICTIONARY, true);
+
+        return new Context(
+            rowGroupSize,
+            pageSize,
+            pageRowLimit,
+            dictionaryPageSize,
+            codec,
+            compressionLevel,
+            rowGroupCheckMinRecordCount,
+            rowGroupCheckMaxRecordCount,
+            PARQUET_BLOOM_FILTER_MAX_BYTES_DEFAULT,
+            ImmutableMap.of(),
+            dictionaryEnabled);
       }
 
       private static CompressionCodecName toCodec(String codecAsString) {
@@ -356,6 +566,10 @@ public class Parquet {
         return pageSize;
       }
 
+      int pageRowLimit() {
+        return pageRowLimit;
+      }
+
       int dictionaryPageSize() {
         return dictionaryPageSize;
       }
@@ -366,6 +580,26 @@ public class Parquet {
 
       String compressionLevel() {
         return compressionLevel;
+      }
+
+      int rowGroupCheckMinRecordCount() {
+        return rowGroupCheckMinRecordCount;
+      }
+
+      int rowGroupCheckMaxRecordCount() {
+        return rowGroupCheckMaxRecordCount;
+      }
+
+      int bloomFilterMaxBytes() {
+        return bloomFilterMaxBytes;
+      }
+
+      Map<String, String> columnBloomFilterEnabled() {
+        return columnBloomFilterEnabled;
+      }
+
+      boolean dictionaryEnabled() {
+        return dictionaryEnabled;
       }
     }
   }
@@ -429,7 +663,8 @@ public class Parquet {
       return this;
     }
 
-    public DataWriteBuilder createWriterFunc(Function<MessageType, ParquetValueWriter<?>> newCreateWriterFunc) {
+    public DataWriteBuilder createWriterFunc(
+        Function<MessageType, ParquetValueWriter<?>> newCreateWriterFunc) {
       appenderBuilder.createWriterFunc(newCreateWriterFunc);
       return this;
     }
@@ -449,6 +684,16 @@ public class Parquet {
       return this;
     }
 
+    public DataWriteBuilder withFileEncryptionKey(ByteBuffer fileEncryptionKey) {
+      appenderBuilder.withFileEncryptionKey(fileEncryptionKey);
+      return this;
+    }
+
+    public DataWriteBuilder withAADPrefix(ByteBuffer aadPrefix) {
+      appenderBuilder.withAADPrefix(aadPrefix);
+      return this;
+    }
+
     public DataWriteBuilder withSortOrder(SortOrder newSortOrder) {
       this.sortOrder = newSortOrder;
       return this;
@@ -456,11 +701,13 @@ public class Parquet {
 
     public <T> DataWriter<T> build() throws IOException {
       Preconditions.checkArgument(spec != null, "Cannot create data writer without spec");
-      Preconditions.checkArgument(spec.isUnpartitioned() || partition != null,
+      Preconditions.checkArgument(
+          spec.isUnpartitioned() || partition != null,
           "Partition must not be null when creating data writer for partitioned spec");
 
       FileAppender<T> fileAppender = appenderBuilder.build();
-      return new DataWriter<>(fileAppender, FileFormat.PARQUET, location, spec, partition, keyMetadata, sortOrder);
+      return new DataWriter<>(
+          fileAppender, FileFormat.PARQUET, location, spec, partition, keyMetadata, sortOrder);
     }
   }
 
@@ -522,7 +769,8 @@ public class Parquet {
       return this;
     }
 
-    public DeleteWriteBuilder createWriterFunc(Function<MessageType, ParquetValueWriter<?>> newCreateWriterFunc) {
+    public DeleteWriteBuilder createWriterFunc(
+        Function<MessageType, ParquetValueWriter<?>> newCreateWriterFunc) {
       this.createWriterFunc = newCreateWriterFunc;
       return this;
     }
@@ -547,6 +795,16 @@ public class Parquet {
       return this;
     }
 
+    public DeleteWriteBuilder withFileEncryptionKey(ByteBuffer fileEncryptionKey) {
+      appenderBuilder.withFileEncryptionKey(fileEncryptionKey);
+      return this;
+    }
+
+    public DeleteWriteBuilder withAADPrefix(ByteBuffer aadPrefix) {
+      appenderBuilder.withAADPrefix(aadPrefix);
+      return this;
+    }
+
     public DeleteWriteBuilder equalityFieldIds(List<Integer> fieldIds) {
       this.equalityFieldIds = ArrayUtil.toIntArray(fieldIds);
       return this;
@@ -568,19 +826,25 @@ public class Parquet {
     }
 
     public <T> EqualityDeleteWriter<T> buildEqualityWriter() throws IOException {
-      Preconditions.checkState(rowSchema != null, "Cannot create equality delete file without a schema");
-      Preconditions.checkState(equalityFieldIds != null, "Cannot create equality delete file without delete field ids");
-      Preconditions.checkState(createWriterFunc != null,
+      Preconditions.checkState(
+          rowSchema != null, "Cannot create equality delete file without a schema");
+      Preconditions.checkState(
+          equalityFieldIds != null, "Cannot create equality delete file without delete field ids");
+      Preconditions.checkState(
+          createWriterFunc != null,
           "Cannot create equality delete file unless createWriterFunc is set");
-      Preconditions.checkArgument(spec != null,
-          "Spec must not be null when creating equality delete writer");
-      Preconditions.checkArgument(spec.isUnpartitioned() || partition != null,
+      Preconditions.checkArgument(
+          spec != null, "Spec must not be null when creating equality delete writer");
+      Preconditions.checkArgument(
+          spec.isUnpartitioned() || partition != null,
           "Partition must not be null for partitioned writes");
 
       meta("delete-type", "equality");
-      meta("delete-field-ids", IntStream.of(equalityFieldIds)
-          .mapToObj(Objects::toString)
-          .collect(Collectors.joining(", ")));
+      meta(
+          "delete-field-ids",
+          IntStream.of(equalityFieldIds)
+              .mapToObj(Objects::toString)
+              .collect(Collectors.joining(", ")));
 
       // the appender uses the row schema without extra columns
       appenderBuilder.schema(rowSchema);
@@ -588,16 +852,26 @@ public class Parquet {
       appenderBuilder.createContextFunc(WriteBuilder.Context::deleteContext);
 
       return new EqualityDeleteWriter<>(
-          appenderBuilder.build(), FileFormat.PARQUET, location, spec, partition, keyMetadata,
-          sortOrder, equalityFieldIds);
+          appenderBuilder.build(),
+          FileFormat.PARQUET,
+          location,
+          spec,
+          partition,
+          keyMetadata,
+          sortOrder,
+          equalityFieldIds);
     }
 
     public <T> PositionDeleteWriter<T> buildPositionWriter() throws IOException {
-      Preconditions.checkState(equalityFieldIds == null, "Cannot create position delete file using delete field ids");
-      Preconditions.checkArgument(spec != null, "Spec must not be null when creating position delete writer");
-      Preconditions.checkArgument(spec.isUnpartitioned() || partition != null,
+      Preconditions.checkState(
+          equalityFieldIds == null, "Cannot create position delete file using delete field ids");
+      Preconditions.checkArgument(
+          spec != null, "Spec must not be null when creating position delete writer");
+      Preconditions.checkArgument(
+          spec.isUnpartitioned() || partition != null,
           "Partition must not be null for partitioned writes");
-      Preconditions.checkArgument(rowSchema == null || createWriterFunc != null,
+      Preconditions.checkArgument(
+          rowSchema == null || createWriterFunc != null,
           "Create function should be provided if we write row data");
 
       meta("delete-type", "position");
@@ -606,22 +880,28 @@ public class Parquet {
         // the appender uses the row schema wrapped with position fields
         appenderBuilder.schema(DeleteSchemaUtil.posDeleteSchema(rowSchema));
 
-        appenderBuilder.createWriterFunc(parquetSchema -> {
-          ParquetValueWriter<?> writer = createWriterFunc.apply(parquetSchema);
-          if (writer instanceof StructWriter) {
-            return new PositionDeleteStructWriter<T>((StructWriter<?>) writer, pathTransformFunc);
-          } else {
-            throw new UnsupportedOperationException("Cannot wrap writer for position deletes: " + writer.getClass());
-          }
-        });
+        appenderBuilder.createWriterFunc(
+            parquetSchema -> {
+              ParquetValueWriter<?> writer = createWriterFunc.apply(parquetSchema);
+              if (writer instanceof StructWriter) {
+                return new PositionDeleteStructWriter<T>(
+                    (StructWriter<?>) writer, pathTransformFunc);
+              } else {
+                throw new UnsupportedOperationException(
+                    "Cannot wrap writer for position deletes: " + writer.getClass());
+              }
+            });
 
       } else {
         appenderBuilder.schema(DeleteSchemaUtil.pathPosSchema());
 
-        // We ignore the 'createWriterFunc' and 'rowSchema' even if is provided, since we do not write row data itself
-        appenderBuilder.createWriterFunc(parquetSchema ->
-            new PositionDeleteStructWriter<T>((StructWriter<?>) GenericParquetWriter.buildWriter(parquetSchema),
-                Function.identity()));
+        // We ignore the 'createWriterFunc' and 'rowSchema' even if is provided, since we do not
+        // write row data itself
+        appenderBuilder.createWriterFunc(
+            parquetSchema ->
+                new PositionDeleteStructWriter<T>(
+                    (StructWriter<?>) GenericParquetWriter.buildWriter(parquetSchema),
+                    Function.identity()));
       }
 
       appenderBuilder.createContextFunc(WriteBuilder.Context::deleteContext);
@@ -631,7 +911,8 @@ public class Parquet {
     }
   }
 
-  private static class ParquetWriteBuilder<T> extends ParquetWriter.Builder<T, ParquetWriteBuilder<T>> {
+  private static class ParquetWriteBuilder<T>
+      extends ParquetWriter.Builder<T, ParquetWriteBuilder<T>> {
     private Map<String, String> keyValueMetadata = Maps.newHashMap();
     private Map<String, String> config = Maps.newHashMap();
     private MessageType type;
@@ -695,6 +976,8 @@ public class Parquet {
     private boolean reuseContainers = false;
     private int maxRecordsPerBatch = 10000;
     private NameMapping nameMapping = null;
+    private ByteBuffer fileEncryptionKey = null;
+    private ByteBuffer fileAADPrefix = null;
 
     private ReadBuilder(InputFile file) {
       this.file = file;
@@ -742,15 +1025,18 @@ public class Parquet {
       return this;
     }
 
-    public ReadBuilder createReaderFunc(Function<MessageType, ParquetValueReader<?>> newReaderFunction) {
-      Preconditions.checkArgument(this.batchedReaderFunc == null,
+    public ReadBuilder createReaderFunc(
+        Function<MessageType, ParquetValueReader<?>> newReaderFunction) {
+      Preconditions.checkArgument(
+          this.batchedReaderFunc == null,
           "Reader function cannot be set since the batched version is already set");
       this.readerFunc = newReaderFunction;
       return this;
     }
 
     public ReadBuilder createBatchedReaderFunc(Function<MessageType, VectorizedReader<?>> func) {
-      Preconditions.checkArgument(this.readerFunc == null,
+      Preconditions.checkArgument(
+          this.readerFunc == null,
           "Batched reader function cannot be set since the non-batched version is already set");
       this.batchedReaderFunc = func;
       return this;
@@ -781,8 +1067,31 @@ public class Parquet {
       return this;
     }
 
+    public ReadBuilder withFileEncryptionKey(ByteBuffer encryptionKey) {
+      this.fileEncryptionKey = encryptionKey;
+      return this;
+    }
+
+    public ReadBuilder withAADPrefix(ByteBuffer aadPrefix) {
+      this.fileAADPrefix = aadPrefix;
+      return this;
+    }
+
     @SuppressWarnings({"unchecked", "checkstyle:CyclomaticComplexity"})
     public <D> CloseableIterable<D> build() {
+      FileDecryptionProperties fileDecryptionProperties = null;
+      if (fileEncryptionKey != null) {
+        byte[] encryptionKeyArray = ByteBuffers.toByteArray(fileEncryptionKey);
+        byte[] aadPrefixArray = ByteBuffers.toByteArray(fileAADPrefix);
+        fileDecryptionProperties =
+            FileDecryptionProperties.builder()
+                .withFooterKey(encryptionKeyArray)
+                .withAADPrefix(aadPrefixArray)
+                .build();
+      } else {
+        Preconditions.checkState(fileAADPrefix == null, "AAD prefix set with null encryption key");
+      }
+
       if (readerFunc != null || batchedReaderFunc != null) {
         ParquetReadOptions.Builder optionsBuilder;
         if (file instanceof HadoopInputFile) {
@@ -804,14 +1113,33 @@ public class Parquet {
           optionsBuilder.withRange(start, start + length);
         }
 
+        if (fileDecryptionProperties != null) {
+          optionsBuilder.withDecryption(fileDecryptionProperties);
+        }
+
         ParquetReadOptions options = optionsBuilder.build();
 
         if (batchedReaderFunc != null) {
-          return new VectorizedParquetReader<>(file, schema, options, batchedReaderFunc, nameMapping, filter,
-              reuseContainers, caseSensitive, maxRecordsPerBatch);
+          return new VectorizedParquetReader<>(
+              file,
+              schema,
+              options,
+              batchedReaderFunc,
+              nameMapping,
+              filter,
+              reuseContainers,
+              caseSensitive,
+              maxRecordsPerBatch);
         } else {
           return new org.apache.iceberg.parquet.ParquetReader<>(
-              file, schema, options, readerFunc, nameMapping, filter, reuseContainers, caseSensitive);
+              file,
+              schema,
+              options,
+              readerFunc,
+              nameMapping,
+              filter,
+              reuseContainers,
+              caseSensitive);
         }
       }
 
@@ -826,9 +1154,12 @@ public class Parquet {
       }
 
       // default options for readers
-      builder.set("parquet.strict.typing", "false") // allow type promotion
+      builder
+          .set("parquet.strict.typing", "false") // allow type promotion
           .set("parquet.avro.compatible", "false") // use the new RecordReader with Utf8 support
-          .set("parquet.avro.add-list-element-records", "false"); // assume that lists use a 3-level schema
+          .set(
+              "parquet.avro.add-list-element-records",
+              "false"); // assume that lists use a 3-level schema
 
       for (Map.Entry<String, String> entry : properties.entrySet()) {
         builder.set(entry.getKey(), entry.getValue());
@@ -837,21 +1168,28 @@ public class Parquet {
       if (filter != null) {
         // TODO: should not need to get the schema to push down before opening the file.
         // Parquet should allow setting a filter inside its read support
+        ParquetReadOptions decryptOptions =
+            ParquetReadOptions.builder().withDecryption(fileDecryptionProperties).build();
         MessageType type;
-        try (ParquetFileReader schemaReader = ParquetFileReader.open(ParquetIO.file(file))) {
+        try (ParquetFileReader schemaReader =
+            ParquetFileReader.open(ParquetIO.file(file), decryptOptions)) {
           type = schemaReader.getFileMetaData().getSchema();
         } catch (IOException e) {
           throw new RuntimeIOException(e);
         }
         Schema fileSchema = ParquetSchemaUtil.convert(type);
-        builder.useStatsFilter()
+        builder
+            .useStatsFilter()
             .useDictionaryFilter()
             .useRecordFilter(filterRecords)
+            .useBloomFilter()
             .withFilter(ParquetFilters.convert(fileSchema, filter, caseSensitive));
       } else {
         // turn off filtering
-        builder.useStatsFilter(false)
+        builder
+            .useStatsFilter(false)
             .useDictionaryFilter(false)
+            .useBloomFilter(false)
             .useRecordFilter(false);
       }
 
@@ -865,6 +1203,10 @@ public class Parquet {
 
       if (nameMapping != null) {
         builder.withNameMapping(nameMapping);
+      }
+
+      if (fileDecryptionProperties != null) {
+        builder.withDecryption(fileDecryptionProperties);
       }
 
       return new ParquetIterable<>(builder);
@@ -910,19 +1252,28 @@ public class Parquet {
   /**
    * Combines several files into one
    *
-   * @param inputFiles   an {@link Iterable} of parquet files. The order of iteration determines the order in which
-   *                     content of files are read and written to the {@code outputFile}
-   * @param outputFile   the output parquet file containing all the data from {@code inputFiles}
+   * @param inputFiles an {@link Iterable} of parquet files. The order of iteration determines the
+   *     order in which content of files are read and written to the {@code outputFile}
+   * @param outputFile the output parquet file containing all the data from {@code inputFiles}
    * @param rowGroupSize the row group size to use when writing the {@code outputFile}
-   * @param schema       the schema of the data
-   * @param metadata     extraMetadata to write at the footer of the {@code outputFile}
+   * @param schema the schema of the data
+   * @param metadata extraMetadata to write at the footer of the {@code outputFile}
    */
-  public static void concat(Iterable<File> inputFiles, File outputFile, int rowGroupSize, Schema schema,
-                            Map<String, String> metadata) throws IOException {
+  public static void concat(
+      Iterable<File> inputFiles,
+      File outputFile,
+      int rowGroupSize,
+      Schema schema,
+      Map<String, String> metadata)
+      throws IOException {
     OutputFile file = Files.localOutput(outputFile);
-    ParquetFileWriter writer = new ParquetFileWriter(
-            ParquetIO.file(file), ParquetSchemaUtil.convert(schema, "table"),
-            ParquetFileWriter.Mode.CREATE, rowGroupSize, 0);
+    ParquetFileWriter writer =
+        new ParquetFileWriter(
+            ParquetIO.file(file),
+            ParquetSchemaUtil.convert(schema, "table"),
+            ParquetFileWriter.Mode.CREATE,
+            rowGroupSize,
+            0);
     writer.start();
     for (File inputFile : inputFiles) {
       writer.appendFile(ParquetIO.file(Files.localInput(inputFile)));

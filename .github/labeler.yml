@@ -30,11 +30,13 @@ INFRA:
   - dev/**/*
 BUILD:
   - "**/*gradle*"
-  - versions.props
 DOCS:
-  - site/**/*
+  - docs/**/*
   - "**/*CHANGELOG.md"
   - "**/*README.md"
+  - "**/*CONTRIBUTING.md"
+SPECIFICATION:
+  - "format/*"
 EXAMPLES:
   - examples/**/*
 COMMON:
@@ -43,9 +45,6 @@ API:
   - api/**/*
 CORE:
   - core/**/*
-PYTHON:
-  - python/**/*
-  - python_legacy/**/*
 PARQUET:
   - parquet/**/*
 ARROW:
@@ -60,7 +59,6 @@ DATA:
   - data/**/*
 SPARK:
   - spark-runtime/**/*
-  - spark3-runtime/**/*
   - spark/**/*
   - spark2/**/*
   - spark3/**/*
@@ -74,7 +72,20 @@ PIG:
   - pig/**/*
 AWS:
   - aws/**/*
+  - aws-bundle/**/*
 NESSIE:
   - nessie/**/*
 ALIYUN:
   - aliyun/**/*
+GCP:
+  - gcp/**/*
+  - gcp-bundle/**/*
+DELL:
+  - dell/**/*
+SNOWFLAKE:
+  - snowflake/**/*
+OPENAPI:
+  - open-api/**/*
+AZURE:
+  - azure/**/*
+  - azure-bundle/**/*

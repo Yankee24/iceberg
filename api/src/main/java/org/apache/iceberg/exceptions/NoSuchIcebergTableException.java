@@ -16,15 +16,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.exceptions;
 
 import com.google.errorprone.annotations.FormatMethod;
 
-/**
- * NoSuchTableException thrown when a table is found but it is not an Iceberg table.
- */
-public class NoSuchIcebergTableException extends NoSuchTableException {
+/** NoSuchTableException thrown when a table is found but it is not an Iceberg table. */
+public class NoSuchIcebergTableException extends NoSuchTableException implements CleanableFailure {
   @FormatMethod
   public NoSuchIcebergTableException(String message, Object... args) {
     super(message, args);

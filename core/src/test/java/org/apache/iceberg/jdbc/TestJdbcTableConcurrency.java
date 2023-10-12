@@ -16,8 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.jdbc;
+
+import static org.apache.iceberg.TableProperties.COMMIT_MAX_RETRY_WAIT_MS;
+import static org.apache.iceberg.TableProperties.COMMIT_MIN_RETRY_WAIT_MS;
+import static org.apache.iceberg.TableProperties.COMMIT_NUM_RETRIES;
+import static org.apache.iceberg.types.Types.NestedField.required;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
 import java.io.IOException;
@@ -41,31 +46,22 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.util.concurrent.MoreExecutors;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.Tasks;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-
-import static org.apache.iceberg.TableProperties.COMMIT_MAX_RETRY_WAIT_MS;
-import static org.apache.iceberg.TableProperties.COMMIT_MIN_RETRY_WAIT_MS;
-import static org.apache.iceberg.TableProperties.COMMIT_NUM_RETRIES;
-import static org.apache.iceberg.types.Types.NestedField.required;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 public class TestJdbcTableConcurrency {
 
   static final TableIdentifier TABLE_IDENTIFIER = TableIdentifier.of("db", "test_table");
-  static final Schema SCHEMA = new Schema(
-      required(1, "id", Types.IntegerType.get(), "unique ID"),
-      required(2, "data", Types.StringType.get())
-  );
-  @Rule
-  public TemporaryFolder temp = new TemporaryFolder();
-  File tableDir;
+  static final Schema SCHEMA =
+      new Schema(
+          required(1, "id", Types.IntegerType.get(), "unique ID"),
+          required(2, "data", Types.StringType.get()));
+
+  @TempDir private File tableDir;
 
   @Test
   public synchronized void testConcurrentFastAppends() throws IOException {
     Map<String, String> properties = Maps.newHashMap();
-    this.tableDir = temp.newFolder();
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, tableDir.getAbsolutePath());
     String sqliteDb = "jdbc:sqlite:" + tableDir.getAbsolutePath() + "concurentFastAppend.db";
     properties.put(CatalogProperties.URI, sqliteDb);
@@ -77,42 +73,45 @@ public class TestJdbcTableConcurrency {
     Table icebergTable = catalog.loadTable(TABLE_IDENTIFIER);
 
     String fileName = UUID.randomUUID().toString();
-    DataFile file = DataFiles.builder(icebergTable.spec())
-        .withPath(FileFormat.PARQUET.addExtension(fileName))
-        .withRecordCount(2)
-        .withFileSizeInBytes(0)
-        .build();
+    DataFile file =
+        DataFiles.builder(icebergTable.spec())
+            .withPath(FileFormat.PARQUET.addExtension(fileName))
+            .withRecordCount(2)
+            .withFileSizeInBytes(0)
+            .build();
 
-    ExecutorService executorService = MoreExecutors.getExitingExecutorService(
-        (ThreadPoolExecutor) Executors.newFixedThreadPool(2));
+    ExecutorService executorService =
+        MoreExecutors.getExitingExecutorService(
+            (ThreadPoolExecutor) Executors.newFixedThreadPool(2));
 
     AtomicInteger barrier = new AtomicInteger(0);
     Tasks.range(2)
-        .stopOnFailure().throwFailureWhenFinished()
+        .stopOnFailure()
+        .throwFailureWhenFinished()
         .executeWith(executorService)
-        .run(index -> {
-          for (int numCommittedFiles = 0; numCommittedFiles < 10; numCommittedFiles++) {
-            while (barrier.get() < numCommittedFiles * 2) {
-              try {
-                Thread.sleep(10);
-              } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-              }
-            }
+        .run(
+            index -> {
+              for (int numCommittedFiles = 0; numCommittedFiles < 10; numCommittedFiles++) {
+                while (barrier.get() < numCommittedFiles * 2) {
+                  try {
+                    Thread.sleep(10);
+                  } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                  }
+                }
 
-            icebergTable.newFastAppend().appendFile(file).commit();
-            barrier.incrementAndGet();
-          }
-        });
+                icebergTable.newFastAppend().appendFile(file).commit();
+                barrier.incrementAndGet();
+              }
+            });
 
     icebergTable.refresh();
-    Assert.assertEquals(20, icebergTable.currentSnapshot().allManifests().size());
+    assertThat(icebergTable.currentSnapshot().allManifests(icebergTable.io())).hasSize(20);
   }
 
   @Test
   public synchronized void testConcurrentConnections() throws InterruptedException, IOException {
     Map<String, String> properties = Maps.newHashMap();
-    this.tableDir = temp.newFolder();
     properties.put(CatalogProperties.WAREHOUSE_LOCATION, tableDir.getAbsolutePath());
     String sqliteDb = "jdbc:sqlite:" + tableDir.getAbsolutePath() + "concurentConnections.db";
     properties.put(CatalogProperties.URI, sqliteDb);
@@ -123,28 +122,31 @@ public class TestJdbcTableConcurrency {
 
     Table icebergTable = catalog.loadTable(TABLE_IDENTIFIER);
 
-    icebergTable.updateProperties()
+    icebergTable
+        .updateProperties()
         .set(COMMIT_NUM_RETRIES, "20")
         .set(COMMIT_MIN_RETRY_WAIT_MS, "25")
         .set(COMMIT_MAX_RETRY_WAIT_MS, "25")
         .commit();
 
     String fileName = UUID.randomUUID().toString();
-    DataFile file = DataFiles.builder(icebergTable.spec())
-        .withPath(FileFormat.PARQUET.addExtension(fileName))
-        .withRecordCount(2)
-        .withFileSizeInBytes(0)
-        .build();
+    DataFile file =
+        DataFiles.builder(icebergTable.spec())
+            .withPath(FileFormat.PARQUET.addExtension(fileName))
+            .withRecordCount(2)
+            .withFileSizeInBytes(0)
+            .build();
 
-    ExecutorService executorService = MoreExecutors.getExitingExecutorService(
-        (ThreadPoolExecutor) Executors.newFixedThreadPool(7));
+    ExecutorService executorService =
+        MoreExecutors.getExitingExecutorService(
+            (ThreadPoolExecutor) Executors.newFixedThreadPool(7));
 
     for (int i = 0; i < 7; i++) {
       executorService.submit(() -> icebergTable.newAppend().appendFile(file).commit());
     }
 
     executorService.shutdown();
-    Assert.assertTrue("Timeout", executorService.awaitTermination(3, TimeUnit.MINUTES));
-    Assert.assertEquals(7, Iterables.size(icebergTable.snapshots()));
+    assertThat(executorService.awaitTermination(3, TimeUnit.MINUTES)).as("Timeout").isTrue();
+    assertThat(Iterables.size(icebergTable.snapshots())).isEqualTo(7);
   }
 }

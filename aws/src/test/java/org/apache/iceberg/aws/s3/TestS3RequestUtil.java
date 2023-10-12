@@ -16,12 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.aws.s3;
 
-import org.apache.iceberg.aws.AwsProperties;
-import org.junit.Assert;
-import org.junit.Test;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.s3.model.S3Request;
 import software.amazon.awssdk.services.s3.model.ServerSideEncryption;
 
@@ -35,58 +33,78 @@ public class TestS3RequestUtil {
 
   @Test
   public void testConfigureServerSideCustomEncryption() {
-    AwsProperties awsProperties = new AwsProperties();
-    awsProperties.setS3FileIoSseType(AwsProperties.S3FILEIO_SSE_TYPE_CUSTOM);
-    awsProperties.setS3FileIoSseKey("key");
-    awsProperties.setS3FileIoSseMd5("md5");
-    S3RequestUtil.configureEncryption(awsProperties, this::setServerSideEncryption, this::setKmsKeyId,
-        this::setCustomAlgorithm, this::setCustomKey, this::setCustomMd5);
-    Assert.assertNull(serverSideEncryption);
-    Assert.assertNull(kmsKeyId);
-    Assert.assertEquals(ServerSideEncryption.AES256.name(), customAlgorithm);
-    Assert.assertEquals("key", customKey);
-    Assert.assertEquals("md5", customMd5);
+    S3FileIOProperties s3FileIOProperties = new S3FileIOProperties();
+    s3FileIOProperties.setSseType(S3FileIOProperties.SSE_TYPE_CUSTOM);
+    s3FileIOProperties.setSseKey("key");
+    s3FileIOProperties.setSseMd5("md5");
+    S3RequestUtil.configureEncryption(
+        s3FileIOProperties,
+        this::setServerSideEncryption,
+        this::setKmsKeyId,
+        this::setCustomAlgorithm,
+        this::setCustomKey,
+        this::setCustomMd5);
+    Assertions.assertThat(serverSideEncryption).isNull();
+    Assertions.assertThat(kmsKeyId).isNull();
+    Assertions.assertThat(customAlgorithm).isEqualTo(ServerSideEncryption.AES256.name());
+    Assertions.assertThat(customKey).isEqualTo("key");
+    Assertions.assertThat(customMd5).isEqualTo("md5");
   }
 
   @Test
   public void testConfigureServerSideS3Encryption() {
-    AwsProperties awsProperties = new AwsProperties();
-    awsProperties.setS3FileIoSseType(AwsProperties.S3FILEIO_SSE_TYPE_S3);
-    S3RequestUtil.configureEncryption(awsProperties, this::setServerSideEncryption, this::setKmsKeyId,
-        this::setCustomAlgorithm, this::setCustomKey, this::setCustomMd5);
-    Assert.assertEquals(ServerSideEncryption.AES256, serverSideEncryption);
-    Assert.assertNull(kmsKeyId);
-    Assert.assertNull(customAlgorithm);
-    Assert.assertNull(customKey);
-    Assert.assertNull(customMd5);
+    S3FileIOProperties s3FileIOProperties = new S3FileIOProperties();
+    s3FileIOProperties.setSseType(S3FileIOProperties.SSE_TYPE_S3);
+    S3RequestUtil.configureEncryption(
+        s3FileIOProperties,
+        this::setServerSideEncryption,
+        this::setKmsKeyId,
+        this::setCustomAlgorithm,
+        this::setCustomKey,
+        this::setCustomMd5);
+    Assertions.assertThat(serverSideEncryption).isEqualTo(ServerSideEncryption.AES256);
+    Assertions.assertThat(kmsKeyId).isNull();
+    Assertions.assertThat(customAlgorithm).isNull();
+    Assertions.assertThat(customKey).isNull();
+    Assertions.assertThat(customMd5).isNull();
   }
 
   @Test
   public void testConfigureServerSideKmsEncryption() {
-    AwsProperties awsProperties = new AwsProperties();
-    awsProperties.setS3FileIoSseType(AwsProperties.S3FILEIO_SSE_TYPE_KMS);
-    awsProperties.setS3FileIoSseKey("key");
-    S3RequestUtil.configureEncryption(awsProperties, this::setServerSideEncryption, this::setKmsKeyId,
-        this::setCustomAlgorithm, this::setCustomKey, this::setCustomMd5);
-    Assert.assertEquals(ServerSideEncryption.AWS_KMS, serverSideEncryption);
-    Assert.assertEquals("key", kmsKeyId);
-    Assert.assertNull(customAlgorithm);
-    Assert.assertNull(customKey);
-    Assert.assertNull(customMd5);
+    S3FileIOProperties s3FileIOProperties = new S3FileIOProperties();
+    s3FileIOProperties.setSseType(S3FileIOProperties.SSE_TYPE_KMS);
+    s3FileIOProperties.setSseKey("key");
+    S3RequestUtil.configureEncryption(
+        s3FileIOProperties,
+        this::setServerSideEncryption,
+        this::setKmsKeyId,
+        this::setCustomAlgorithm,
+        this::setCustomKey,
+        this::setCustomMd5);
+    Assertions.assertThat(serverSideEncryption).isEqualTo(ServerSideEncryption.AWS_KMS);
+    Assertions.assertThat(kmsKeyId).isEqualTo("key");
+    Assertions.assertThat(customAlgorithm).isNull();
+    Assertions.assertThat(customKey).isNull();
+    Assertions.assertThat(customMd5).isNull();
   }
 
   @Test
   public void testConfigureEncryptionSkipNullSetters() {
-    AwsProperties awsProperties = new AwsProperties();
-    awsProperties.setS3FileIoSseType(AwsProperties.S3FILEIO_SSE_TYPE_KMS);
-    awsProperties.setS3FileIoSseKey("key");
-    S3RequestUtil.configureEncryption(awsProperties, v -> null, v -> null,
-        this::setCustomAlgorithm, this::setCustomKey, this::setCustomMd5);
-    Assert.assertNull(serverSideEncryption);
-    Assert.assertNull(kmsKeyId);
-    Assert.assertNull(customAlgorithm);
-    Assert.assertNull(customKey);
-    Assert.assertNull(customMd5);
+    S3FileIOProperties s3FileIOProperties = new S3FileIOProperties();
+    s3FileIOProperties.setSseType(S3FileIOProperties.SSE_TYPE_KMS);
+    s3FileIOProperties.setSseKey("key");
+    S3RequestUtil.configureEncryption(
+        s3FileIOProperties,
+        v -> null,
+        v -> null,
+        this::setCustomAlgorithm,
+        this::setCustomKey,
+        this::setCustomMd5);
+    Assertions.assertThat(serverSideEncryption).isNull();
+    Assertions.assertThat(kmsKeyId).isNull();
+    Assertions.assertThat(customAlgorithm).isNull();
+    Assertions.assertThat(customKey).isNull();
+    Assertions.assertThat(customMd5).isNull();
   }
 
   public S3Request.Builder setCustomAlgorithm(String algorithm) {

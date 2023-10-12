@@ -16,17 +16,14 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.aws;
 
 import java.util.Map;
 import java.util.UUID;
+import org.apache.iceberg.aws.s3.S3FileIOProperties;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.util.PropertyUtil;
 import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
 import software.amazon.awssdk.awscore.client.builder.AwsSyncClientBuilder;
-import software.amazon.awssdk.http.SdkHttpClient;
-import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.glue.GlueClient;
@@ -37,74 +34,107 @@ import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 
 public class AssumeRoleAwsClientFactory implements AwsClientFactory {
-
-  private static final SdkHttpClient HTTP_CLIENT_DEFAULT = UrlConnectionHttpClient.create();
-
-  private String roleArn;
-  private String externalId;
-  private int timeout;
-  private String region;
-  private String s3Endpoint;
+  private AwsProperties awsProperties;
+  private HttpClientProperties httpClientProperties;
+  private S3FileIOProperties s3FileIOProperties;
+  private String roleSessionName;
 
   @Override
   public S3Client s3() {
     return S3Client.builder()
-        .applyMutation(this::configure)
-        .applyMutation(builder -> AwsClientFactories.configureEndpoint(builder, s3Endpoint))
+        .applyMutation(this::applyAssumeRoleConfigurations)
+        .applyMutation(httpClientProperties::applyHttpClientConfigurations)
+        .applyMutation(s3FileIOProperties::applyEndpointConfigurations)
+        .applyMutation(s3FileIOProperties::applyServiceConfigurations)
+        .applyMutation(s3FileIOProperties::applySignerConfiguration)
         .build();
   }
 
   @Override
   public GlueClient glue() {
-    return GlueClient.builder().applyMutation(this::configure).build();
+    return GlueClient.builder()
+        .applyMutation(this::applyAssumeRoleConfigurations)
+        .applyMutation(httpClientProperties::applyHttpClientConfigurations)
+        .build();
   }
 
   @Override
   public KmsClient kms() {
-    return KmsClient.builder().applyMutation(this::configure).build();
+    return KmsClient.builder()
+        .applyMutation(this::applyAssumeRoleConfigurations)
+        .applyMutation(httpClientProperties::applyHttpClientConfigurations)
+        .build();
   }
 
   @Override
   public DynamoDbClient dynamo() {
-    return DynamoDbClient.builder().applyMutation(this::configure).build();
+    return DynamoDbClient.builder()
+        .applyMutation(this::applyAssumeRoleConfigurations)
+        .applyMutation(httpClientProperties::applyHttpClientConfigurations)
+        .applyMutation(awsProperties::applyDynamoDbEndpointConfigurations)
+        .build();
   }
 
   @Override
   public void initialize(Map<String, String> properties) {
-    roleArn = properties.get(AwsProperties.CLIENT_ASSUME_ROLE_ARN);
-    Preconditions.checkNotNull(roleArn,
+    this.awsProperties = new AwsProperties(properties);
+    this.s3FileIOProperties = new S3FileIOProperties(properties);
+    this.httpClientProperties = new HttpClientProperties(properties);
+    this.roleSessionName = genSessionName();
+    Preconditions.checkNotNull(
+        awsProperties.clientAssumeRoleArn(),
         "Cannot initialize AssumeRoleClientConfigFactory with null role ARN");
-    timeout = PropertyUtil.propertyAsInt(properties,
-        AwsProperties.CLIENT_ASSUME_ROLE_TIMEOUT_SEC, AwsProperties.CLIENT_ASSUME_ROLE_TIMEOUT_SEC_DEFAULT);
-    externalId = properties.get(AwsProperties.CLIENT_ASSUME_ROLE_EXTERNAL_ID);
-
-    region = properties.get(AwsProperties.CLIENT_ASSUME_ROLE_REGION);
-    Preconditions.checkNotNull(region, "Cannot initialize AssumeRoleClientConfigFactory with null region");
-
-    this.s3Endpoint = properties.get(AwsProperties.S3FILEIO_ENDPOINT);
+    Preconditions.checkNotNull(
+        awsProperties.clientAssumeRoleRegion(),
+        "Cannot initialize AssumeRoleClientConfigFactory with null region");
   }
 
-  private <T extends AwsClientBuilder & AwsSyncClientBuilder> T configure(T clientBuilder) {
-    AssumeRoleRequest request = AssumeRoleRequest.builder()
-        .roleArn(roleArn)
-        .roleSessionName(genSessionName())
-        .durationSeconds(timeout)
-        .externalId(externalId)
-        .build();
-
-    clientBuilder.credentialsProvider(
-        StsAssumeRoleCredentialsProvider.builder()
-            .stsClient(StsClient.builder().httpClient(HTTP_CLIENT_DEFAULT).build())
-            .refreshRequest(request)
-            .build());
-
-    clientBuilder.region(Region.of(region));
-    clientBuilder.httpClient(HTTP_CLIENT_DEFAULT);
-
+  protected <T extends AwsClientBuilder & AwsSyncClientBuilder> T applyAssumeRoleConfigurations(
+      T clientBuilder) {
+    AssumeRoleRequest assumeRoleRequest =
+        AssumeRoleRequest.builder()
+            .roleArn(awsProperties.clientAssumeRoleArn())
+            .roleSessionName(roleSessionName)
+            .durationSeconds(awsProperties.clientAssumeRoleTimeoutSec())
+            .externalId(awsProperties.clientAssumeRoleExternalId())
+            .tags(awsProperties.stsClientAssumeRoleTags())
+            .build();
+    clientBuilder
+        .credentialsProvider(
+            StsAssumeRoleCredentialsProvider.builder()
+                .stsClient(sts())
+                .refreshRequest(assumeRoleRequest)
+                .build())
+        .region(Region.of(awsProperties.clientAssumeRoleRegion()));
     return clientBuilder;
   }
 
+  protected String region() {
+    return awsProperties.clientAssumeRoleRegion();
+  }
+
+  protected AwsProperties awsProperties() {
+    return awsProperties;
+  }
+
+  protected HttpClientProperties httpClientProperties() {
+    return httpClientProperties;
+  }
+
+  protected S3FileIOProperties s3FileIOProperties() {
+    return s3FileIOProperties;
+  }
+
+  private StsClient sts() {
+    return StsClient.builder()
+        .applyMutation(httpClientProperties::applyHttpClientConfigurations)
+        .build();
+  }
+
   private String genSessionName() {
+    if (awsProperties.clientAssumeRoleSessionName() != null) {
+      return awsProperties.clientAssumeRoleSessionName();
+    }
     return String.format("iceberg-aws-%s", UUID.randomUUID());
   }
 }

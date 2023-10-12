@@ -16,7 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg;
 
 import java.util.Collection;
@@ -25,9 +24,11 @@ import org.apache.iceberg.relocated.com.google.common.base.Joiner;
 import org.apache.iceberg.relocated.com.google.common.base.MoreObjects;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.util.TableScanUtil;
 
 public class BaseCombinedScanTask implements CombinedScanTask {
   private final FileScanTask[] tasks;
+  private transient volatile List<FileScanTask> taskList = null;
 
   public BaseCombinedScanTask(FileScanTask... tasks) {
     Preconditions.checkNotNull(tasks, "tasks cannot be null");
@@ -36,18 +37,47 @@ public class BaseCombinedScanTask implements CombinedScanTask {
 
   public BaseCombinedScanTask(List<FileScanTask> tasks) {
     Preconditions.checkNotNull(tasks, "tasks cannot be null");
-    this.tasks = BaseFileScanTask.combineAdjacentTasks(tasks).stream().toArray(FileScanTask[]::new);
+    this.tasks = TableScanUtil.mergeTasks(tasks).toArray(new FileScanTask[0]);
   }
 
   @Override
   public Collection<FileScanTask> files() {
-    return ImmutableList.copyOf(tasks);
+    if (taskList == null) {
+      this.taskList = ImmutableList.copyOf(tasks);
+    }
+
+    return taskList;
+  }
+
+  @Override
+  public long sizeBytes() {
+    long sizeBytes = 0L;
+    for (FileScanTask task : tasks) {
+      sizeBytes += task.sizeBytes();
+    }
+    return sizeBytes;
+  }
+
+  @Override
+  public long estimatedRowsCount() {
+    long estimatedRowsCount = 0L;
+    for (FileScanTask task : tasks) {
+      estimatedRowsCount += task.estimatedRowsCount();
+    }
+    return estimatedRowsCount;
+  }
+
+  @Override
+  public int filesCount() {
+    int filesCount = 0;
+    for (FileScanTask task : tasks) {
+      filesCount += task.filesCount();
+    }
+    return filesCount;
   }
 
   @Override
   public String toString() {
-    return MoreObjects.toStringHelper(this)
-        .add("tasks", Joiner.on(", ").join(tasks))
-        .toString();
+    return MoreObjects.toStringHelper(this).add("tasks", Joiner.on(", ").join(tasks)).toString();
   }
 }

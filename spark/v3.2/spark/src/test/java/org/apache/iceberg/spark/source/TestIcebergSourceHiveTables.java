@@ -16,10 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.spark.source;
 
 import java.io.IOException;
+import java.util.Map;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.iceberg.PartitionSpec;
@@ -52,14 +52,16 @@ public class TestIcebergSourceHiveTables extends TestIcebergSourceTablesBase {
   }
 
   @Override
-  public Table createTable(TableIdentifier ident, Schema schema, PartitionSpec spec) {
+  public Table createTable(
+      TableIdentifier ident, Schema schema, PartitionSpec spec, Map<String, String> properties) {
     TestIcebergSourceHiveTables.currentIdentifier = ident;
-    return TestIcebergSourceHiveTables.catalog.createTable(ident, schema, spec);
+    return TestIcebergSourceHiveTables.catalog.createTable(ident, schema, spec, properties);
   }
 
   @Override
   public Table loadTable(TableIdentifier ident, String entriesSuffix) {
-    TableIdentifier identifier = TableIdentifier.of(ident.namespace().level(0), ident.name(), entriesSuffix);
+    TableIdentifier identifier =
+        TableIdentifier.of(ident.namespace().level(0), ident.name(), entriesSuffix);
     return TestIcebergSourceHiveTables.catalog.loadTable(identifier);
   }
 

@@ -16,58 +16,40 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.nessie;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.Predicate;
 import javax.annotation.Nullable;
 import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.SnapshotRef;
+import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.projectnessie.model.CommitMeta;
 import org.projectnessie.model.ContentKey;
-import org.projectnessie.model.EntriesResponse;
+import org.projectnessie.model.IcebergTable;
 import org.projectnessie.model.ImmutableCommitMeta;
+import org.projectnessie.model.Reference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class NessieUtil {
 
-  public static final String NESSIE_CONFIG_PREFIX = "nessie.";
-  public static final String CONFIG_CLIENT_BUILDER_IMPL = NESSIE_CONFIG_PREFIX + "client-builder-impl";
+  private static final Logger LOG = LoggerFactory.getLogger(NessieUtil.class);
 
+  public static final String NESSIE_CONFIG_PREFIX = "nessie.";
   static final String APPLICATION_TYPE = "application-type";
 
-  private NessieUtil() {
-  }
+  public static final String CLIENT_API_VERSION = "nessie.client-api-version";
 
-  static Predicate<EntriesResponse.Entry> namespacePredicate(Namespace ns) {
-    // TODO: filter to just iceberg tables.
-    if (ns == null) {
-      return e -> true;
-    }
-
-    final List<String> namespace = Arrays.asList(ns.levels());
-    Predicate<EntriesResponse.Entry> predicate = e -> {
-      List<String> names = e.getName().getElements();
-
-      if (names.size() <= namespace.size()) {
-        return false;
-      }
-
-      return namespace.equals(names.subList(0, namespace.size()));
-    };
-    return predicate;
-  }
-
-  static TableIdentifier toIdentifier(EntriesResponse.Entry entry) {
-    List<String> elements = entry.getName().getElements();
-    return TableIdentifier.of(elements.toArray(new String[elements.size()]));
-  }
+  private NessieUtil() {}
 
   static TableIdentifier removeCatalogName(TableIdentifier to, String name) {
 
@@ -96,25 +78,91 @@ public final class NessieUtil {
     return catalogOptions(CommitMeta.builder().message(commitMsg), catalogOptions).build();
   }
 
-  static ImmutableCommitMeta.Builder catalogOptions(ImmutableCommitMeta.Builder commitMetaBuilder,
-      Map<String, String> catalogOptions) {
+  static ImmutableCommitMeta.Builder catalogOptions(
+      ImmutableCommitMeta.Builder commitMetaBuilder, Map<String, String> catalogOptions) {
     Preconditions.checkArgument(null != catalogOptions, "catalogOptions must not be null");
     commitMetaBuilder.author(NessieUtil.commitAuthor(catalogOptions));
     commitMetaBuilder.putProperties(APPLICATION_TYPE, "iceberg");
     if (catalogOptions.containsKey(CatalogProperties.APP_ID)) {
-      commitMetaBuilder.putProperties(CatalogProperties.APP_ID, catalogOptions.get(CatalogProperties.APP_ID));
+      commitMetaBuilder.putProperties(
+          CatalogProperties.APP_ID, catalogOptions.get(CatalogProperties.APP_ID));
     }
     return commitMetaBuilder;
   }
 
   /**
    * @param catalogOptions The options where to look for the <b>user</b>
-   * @return The author that can be used for a commit, which is either the <b>user</b> from the given
-   * <code>catalogOptions</code> or the logged in user as defined in the <b>user.name</b> JVM properties.
+   * @return The author that can be used for a commit, which is either the <b>user</b> from the
+   *     given <code>catalogOptions</code> or the logged in user as defined in the <b>user.name</b>
+   *     JVM properties.
    */
   @Nullable
   private static String commitAuthor(Map<String, String> catalogOptions) {
     return Optional.ofNullable(catalogOptions.get(CatalogProperties.USER))
         .orElseGet(() -> System.getProperty("user.name"));
+  }
+
+  private static void checkAndUpdateGCProperties(
+      TableMetadata tableMetadata, Map<String, String> updatedProperties, String identifier) {
+    if (tableMetadata.propertyAsBoolean(
+        NessieTableOperations.NESSIE_GC_NO_WARNING_PROPERTY, false)) {
+      return;
+    }
+
+    // To prevent accidental deletion of files that are still referenced by other branches/tags,
+    // setting GC_ENABLED to 'false' is recommended, so that all Iceberg's gc operations like
+    // expire_snapshots, remove_orphan_files, drop_table with purge will fail with an error.
+    // `nessie-gc` CLI provides a reference-aware GC functionality for the expired/unreferenced
+    // files.
+    // Advanced users may still want to use the simpler Iceberg GC tools iff their Nessie Server
+    // contains only one branch (in which case the full Nessie history will be reflected in the
+    // Iceberg sequence of snapshots).
+    if (tableMetadata.propertyAsBoolean(
+            TableProperties.GC_ENABLED, TableProperties.GC_ENABLED_DEFAULT)
+        || tableMetadata.propertyAsBoolean(
+            TableProperties.METADATA_DELETE_AFTER_COMMIT_ENABLED,
+            TableProperties.METADATA_DELETE_AFTER_COMMIT_ENABLED_DEFAULT)) {
+      updatedProperties.put(NessieTableOperations.NESSIE_GC_NO_WARNING_PROPERTY, "true");
+      LOG.warn(
+          "The Iceberg property '{}' and/or '{}' is enabled on table '{}' in NessieCatalog."
+              + " This will likely make data in other Nessie branches and tags and in earlier, historical Nessie"
+              + " commits inaccessible. The recommended setting for those properties is 'false'. Use the 'nessie-gc'"
+              + " tool for Nessie reference-aware garbage collection.",
+          TableProperties.GC_ENABLED,
+          TableProperties.METADATA_DELETE_AFTER_COMMIT_ENABLED,
+          identifier);
+    }
+  }
+
+  public static TableMetadata updateTableMetadataWithNessieSpecificProperties(
+      TableMetadata tableMetadata,
+      String metadataLocation,
+      IcebergTable table,
+      String identifier,
+      Reference reference) {
+    // Update the TableMetadata with the Content of NessieTableState.
+    Map<String, String> newProperties = Maps.newHashMap(tableMetadata.properties());
+    newProperties.put(NessieTableOperations.NESSIE_COMMIT_ID_PROPERTY, reference.getHash());
+
+    checkAndUpdateGCProperties(tableMetadata, newProperties, identifier);
+
+    TableMetadata.Builder builder =
+        TableMetadata.buildFrom(tableMetadata)
+            .setPreviousFileLocation(null)
+            .setCurrentSchema(table.getSchemaId())
+            .setDefaultSortOrder(table.getSortOrderId())
+            .setDefaultPartitionSpec(table.getSpecId())
+            .withMetadataLocation(metadataLocation)
+            .setProperties(newProperties);
+    if (table.getSnapshotId() != -1) {
+      builder.setBranchSnapshot(table.getSnapshotId(), SnapshotRef.MAIN_BRANCH);
+    }
+    LOG.info(
+        "loadTableMetadata for '{}' from location '{}' at '{}'",
+        identifier,
+        metadataLocation,
+        reference);
+
+    return builder.discardChanges().build();
   }
 }

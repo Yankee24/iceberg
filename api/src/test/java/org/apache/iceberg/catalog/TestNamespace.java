@@ -16,11 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.iceberg.catalog;
 
 import org.assertj.core.api.Assertions;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestNamespace {
 
@@ -38,10 +37,28 @@ public class TestNamespace {
     String[] levels = {"a", "b", "c", "d"};
     Namespace namespace = Namespace.of(levels);
     Assertions.assertThat(namespace).isNotNull();
-    Assertions.assertThat(namespace.levels()).isNotNull().hasSize(4);
-    Assertions.assertThat(namespace.toString()).isEqualTo("a.b.c.d");
+    Assertions.assertThat(namespace.levels()).hasSize(4);
+    Assertions.assertThat(namespace).hasToString("a.b.c.d");
     for (int i = 0; i < levels.length; i++) {
       Assertions.assertThat(namespace.level(i)).isEqualTo(levels[i]);
     }
+  }
+
+  @Test
+  public void testWithNullInLevel() {
+    Assertions.assertThatThrownBy(() -> Namespace.of("a", null, "b"))
+        .isInstanceOf(NullPointerException.class)
+        .hasMessage("Cannot create a namespace with a null level");
+  }
+
+  @Test
+  public void testDisallowsNamespaceWithNullByte() {
+    Assertions.assertThatThrownBy(() -> Namespace.of("ac", "\u0000c", "b"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Cannot create a namespace with the null-byte character");
+
+    Assertions.assertThatThrownBy(() -> Namespace.of("ac", "c\0", "b"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Cannot create a namespace with the null-byte character");
   }
 }
